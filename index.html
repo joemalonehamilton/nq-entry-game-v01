@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Entry Game v0.1</title>
+  <link rel="stylesheet" href="entry-pattern-game.css" />
+  <style>
+    .title{-webkit-text-fill-color:initial;background:none;color:#e5eefc}.subtitle b{color:var(--yellow)}
+    .control-strip{align-items:center;flex-wrap:wrap}.main-grid{grid-template-columns:minmax(0,1fr) 390px}.chart-card{position:relative}.split-card{gap:8px}.pane{position:relative}.parent-pane{height:38%}.exec-pane{height:62%}.pane canvas{height:100%;width:100%}
+    .schema-row,.side-row,.read-row{display:grid;gap:6px}.schema-row{grid-template-columns:repeat(7,1fr)}.side-row{grid-template-columns:1fr 1fr 1fr}.read-row{grid-template-columns:1fr 1fr}
+    .schema-btn,.side-btn{border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.045);color:var(--text);font-weight:900;padding:9px 6px;cursor:pointer;font-size:12px}.schema-btn.active,.side-btn.active{border-color:rgba(102,167,255,.65);box-shadow:0 0 0 2px rgba(102,167,255,.14);background:rgba(102,167,255,.13)}.schema-btn[data-v="NEW"].active,.side-btn[data-v="SKIP"].active{border-color:rgba(255,209,102,.65);background:rgba(255,209,102,.10)}.side-btn[data-v="LONG"].active{border-color:rgba(55,242,154,.65);background:rgba(55,242,154,.10)}.side-btn[data-v="SHORT"].active{border-color:rgba(255,91,114,.65);background:rgba(255,91,114,.10)}
+    .daily-pill{display:inline-flex;gap:5px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;color:var(--muted)}.daily-pill.good{color:var(--green);border-color:rgba(55,242,154,.35)}.daily-pill.warn{color:var(--yellow);border-color:rgba(255,209,102,.35)}.daily-pill.bad{color:var(--red);border-color:rgba(255,91,114,.35)}
+    .map-note{font-size:12px;line-height:1.45;color:var(--muted);padding:9px;border:1px solid rgba(255,209,102,.22);background:rgba(255,209,102,.055);border-radius:10px}.map-note b{color:var(--yellow)}
+    .answer-card{border:1px solid rgba(102,167,255,.32);background:rgba(102,167,255,.06);border-radius:12px;padding:10px}.answer-card.win{border-color:rgba(55,242,154,.38);background:rgba(55,242,154,.06)}.answer-card.loss{border-color:rgba(255,91,114,.38);background:rgba(255,91,114,.06)}.big-score{font-size:42px;font-weight:1000;text-align:center;line-height:1;color:var(--blue)}.score-title{text-align:center;font-weight:900;margin:4px 0 8px}.score-grid{display:grid;grid-template-columns:1fr auto;gap:5px;font-size:12px;border-top:1px dashed rgba(148,163,184,.16);padding-top:8px}.score-grid span{color:var(--muted)}
+    .legend{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.legend span{font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 6px}.legend .o4{color:#ffd166}.legend .mb{color:#a78bfa}.legend .alpha{color:#66a7ff}.legend .ans{color:#37f29a}.legend .cut{color:#ff5b72}
+    .timeline-controls{flex-wrap:wrap}.btn.on{background:rgba(102,167,255,.13);border-color:rgba(102,167,255,.45)}.readout{font-size:12px;color:var(--muted);line-height:1.65}.readout b{color:var(--text)}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="dragon">🗺️</div>
+        <div>
+          <div class="title">NQ ENTRY GAME v0.1</div>
+          <div class="subtitle"><b>Quality deck</b> · A1/A2/B/C/C-F/D2 · normalized Open4-up · click the one winner · export corrections</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div id="deckCount" class="pill">loading</div>
+        <button id="randomBtn" class="btn ghost">🎲</button>
+        <button id="prevBtn" class="btn ghost">◀</button>
+        <button id="nextBtn" class="btn ghost">Next ▶</button>
+      </div>
+    </header>
+
+    <section class="control-strip">
+      <label>Schematic
+        <select id="schemaFilter">
+          <option value="ALL">All</option><option value="A1">A1 clean retest</option><option value="A2">A2 drive/no-retest</option><option value="B">B failed A</option><option value="C">C1 true AMD</option><option value="C-F">C-F attempt</option><option value="D2">D2 bull trap</option>
+        </select>
+      </label>
+      <button id="unplayedBtn" class="btn ghost" data-on="0">Unplayed off</button>
+      <button id="showOverlaysBtn" class="btn ghost on" data-on="1">Overlays on</button>
+      <button id="exportBtn" class="btn ghost">Export reps</button>
+      <span class="daily-pill warn">No entry before 06:34</span>
+      <span class="daily-pill bad">Core game ends 07:20</span>
+    </section>
+
+    <main class="main-grid">
+      <section class="chart-card split-card">
+        <div class="chart-head">
+          <div>
+            <div id="cardTitle" class="card-title">—</div>
+            <div id="cardMeta" class="card-meta">—</div>
+          </div>
+          <div id="hiddenBadge" class="hidden-badge">HIDDEN</div>
+        </div>
+        <div id="miniScoreboard" class="mini-scoreboard"></div>
+        <div class="legend"><span class="o4">6:34 Open4 rails</span><span class="mb">MB/LVN zones</span><span class="alpha">Alpha boxes</span><span class="ans">answer window</span><span class="cut">07:20 cutoff</span></div>
+        <div class="pane parent-pane">
+          <div class="pane-label">PARENT MAP · 1M CANDLES · 06:00-08:30 CONTEXT</div>
+          <canvas id="parentChart"></canvas>
+        </div>
+        <div class="pane exec-pane">
+          <div class="pane-label">5S EXECUTION · CLICK YOUR ENTRY AFTER 06:34</div>
+          <canvas id="executionChart"></canvas>
+        </div>
+        <div class="timeline-controls">
+          <button id="backBtn" class="btn ghost">◀ 5s</button>
+          <button id="playBtn" class="btn ghost">▶ Play</button>
+          <button id="stepBtn" class="btn ghost">5s ▶</button>
+          <button id="jumpMapBtn" class="btn ghost">Jump 06:34</button>
+          <button id="jumpCoreBtn" class="btn ghost">Jump 07:20</button>
+          <button id="revealBtn" class="btn primary">Reveal</button>
+        </div>
+      </section>
+
+      <aside class="side-panel">
+        <div class="panel-block xp-bar"><div id="statsBox" class="stats-box"></div></div>
+
+        <div class="panel-block">
+          <div class="block-label">1) Classify the day</div>
+          <div class="schema-row">
+            <button class="schema-btn" data-v="A1">A1</button><button class="schema-btn" data-v="A2">A2</button><button class="schema-btn" data-v="B">B</button><button class="schema-btn" data-v="C">C1</button><button class="schema-btn" data-v="C-F">C-F</button><button class="schema-btn" data-v="D2">D2</button><button class="schema-btn" data-v="NEW">NEW</button>
+          </div>
+        </div>
+
+        <div class="panel-block">
+          <div class="block-label">2) Direction / skip</div>
+          <div class="side-row">
+            <button class="side-btn" data-v="LONG">🟢 LONG</button><button class="side-btn" data-v="SHORT">🔴 SHORT</button><button class="side-btn" data-v="SKIP">🟡 SKIP</button>
+          </div>
+        </div>
+
+        <div class="panel-block">
+          <div class="block-label">3) Entry</div>
+          <div id="tradeTicket" class="readout">Click the 5s chart to mark the one winner. Choose actual market side; normalized side is revealed after.</div>
+          <div class="read-row" style="margin-top:8px"><button id="submitBtn" class="btn primary">Submit read</button><button id="resetBtn" class="btn ghost danger">Reset card</button></div>
+          <textarea id="note" placeholder="Why? Mark corrections here: wrong family, should be D1/skip/new box, entry too late, etc."></textarea>
+        </div>
+
+        <div class="panel-block">
+          <div class="block-label">Live schematic checklist</div>
+          <div id="visibleClues" class="clue-list"></div>
+        </div>
+
+        <div id="answerPanel" class="panel-block answer hidden">
+          <div class="block-label">Reveal + Score</div>
+          <div id="answerBox"></div>
+        </div>
+
+        <div class="panel-block">
+          <div class="block-label">Last reps</div>
+          <div id="historyTape" class="history-tape"></div>
+        </div>
+      </aside>
+    </main>
+  </div>
+  <script src="entry-game-v01.js?v=0.1"></script>
+</body>
+</html>
