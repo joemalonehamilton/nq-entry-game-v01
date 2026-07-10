@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NQ ENTRY OPS · Cockpit Trainer v0.2</title>
-  <link rel="stylesheet" href="entry-pattern-game.css?v=0.2" />
+  <title>NQ ENTRY OPS · Trade Window Trainer v0.3</title>
+  <link rel="stylesheet" href="entry-pattern-game.css?v=0.3" />
 </head>
 <body>
   <div class="app">
@@ -15,7 +15,7 @@
         <div class="logo-mark">NQ</div>
         <div class="brand-text">
           <div class="brand-title">ENTRY&nbsp;OPS</div>
-          <div class="brand-sub">quality deck · normalized Open4-up</div>
+          <div class="brand-sub">trade-window mode · charts first</div>
         </div>
       </div>
 
@@ -97,7 +97,7 @@
           <canvas id="parentChart"></canvas>
         </div>
         <div class="pane exec-pane">
-          <div class="pane-label">EXECUTION · 5S · CLICK YOUR ENTRY AFTER 06:34</div>
+          <div class="pane-label">EXECUTION · 5S · WHEEL ZOOM · DRAG PAN · CLICK ONLY WHEN WINDOW OPENS</div>
           <canvas id="executionChart"></canvas>
         </div>
 
@@ -127,7 +127,7 @@
       <aside class="rail">
         <div id="decisionRail">
           <div class="step">
-            <div class="step-head"><span class="step-num">1</span>CLASSIFY THE DAY</div>
+            <div class="step-head"><span class="step-num">1</span>SCHEMATIC LABELS · BACKEND</div>
             <div class="schema-grid">
               <button class="schema-btn" data-v="A1">A1<kbd>A</kbd><i>retest cont.</i></button>
               <button class="schema-btn" data-v="A2">A2<kbd>2</kbd><i>drive / no-retest</i></button>
@@ -140,7 +140,7 @@
           </div>
 
           <div class="step">
-            <div class="step-head"><span class="step-num">2</span>ACTUAL MARKET SIDE</div>
+            <div class="step-head"><span class="step-num">1</span>TRADE WHEN WINDOW OPENS</div>
             <div class="side-grid">
               <button class="side-btn long" data-v="LONG">LONG<kbd>L</kbd></button>
               <button class="side-btn short" data-v="SHORT">SHORT<kbd>S</kbd></button>
@@ -149,7 +149,7 @@
           </div>
 
           <div class="step">
-            <div class="step-head"><span class="step-num">3</span>ENTRY</div>
+            <div class="step-head"><span class="step-num">2</span>ENTRY</div>
             <div id="tradeTicket" class="ticket"></div>
           </div>
 
@@ -208,8 +208,19 @@
     </div>
   </div>
 
+  <div id="outcomeModal" class="outcome-modal hidden">
+    <div class="outcome-card">
+      <div id="outcomeTitle" class="outcome-title">—</div>
+      <div id="outcomeBody"></div>
+      <div class="outcome-actions">
+        <button id="outcomeNextBtn" class="next-btn">NEXT REP <kbd>⏎</kbd></button>
+        <button id="outcomeCloseBtn" class="ghost-btn">SEE DEBRIEF</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toastLayer" class="toast-layer"></div>
 
-  <script src="entry-game-v01.js?v=0.2"></script>
+  <script src="entry-game-v01.js?v=0.3"></script>
 </body>
 </html>

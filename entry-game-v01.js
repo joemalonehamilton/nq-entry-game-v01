@@ -22,6 +22,11 @@ let familyFilter = 'ALL';
 let cardStartMs = Date.now();
 let hoverExec = null;          // {x, i} crosshair on exec chart
 let lastResult = null;         // {cardId, gain, bonuses[], newBadges[], leveledTo}
+let chartZoom = 1.15;          // wheel zoom on execution chart
+let chartPanBars = 0;          // drag/pan offset in 5s bars
+let dragState = null;
+let suppressNextClick = false;
+let outcomeOpen = false;
 
 const SCHEMA = {
   A1: 'A1 clean retest continuation',
@@ -94,13 +99,17 @@ function initCard(){
   stopPlay();
   const lab = labels[c.card_id] || {};
   revealed = !!lab.revealed;
-  visible5 = revealed ? c.bars_5s.length - 1 : indexAtOrAfter(c.bars_5s, '06:34:00');
+  visible5 = revealed ? c.bars_5s.length - 1 : indexAtOrAfter(c.bars_5s, '06:30:00');
   selectedSchema = lab.schema || null;
   selectedSide = lab.side || null;
   selectedEntry = lab.entry_i != null ? {i: lab.entry_i, price: lab.entry_price, time: c.bars_5s[lab.entry_i]?.t} : null;
   $('note').value = lab.note || '';
   cardStartMs = Date.now();
   hoverExec = null;
+  chartZoom = 1.15;
+  chartPanBars = 0;
+  outcomeOpen = false;
+  hideOutcomeModal();
   render();
 }
 
@@ -115,6 +124,23 @@ function indexAtOrBefore(bars, time){
   return last;
 }
 function currentTime(){ const c=current(); return c?.bars_5s?.[visible5]?.t || '—'; }
+function primaryWindow(c){
+  const p = c?.answer?.primary;
+  if(!p || !p[0] || !p[1]) return null;
+  return {start: `${p[0]}:00`, end: `${p[1]}:00`, label: `${p[0]}–${p[1]}`};
+}
+function tradePhase(c){
+  const w = primaryWindow(c); if(!w) return 'watch';
+  const now = tSec(currentTime());
+  if(now < tSec(w.start)) return 'watch';
+  if(now <= tSec(w.end)) return 'trade';
+  return 'expired';
+}
+function tradeWindowArmed(c){ return tradePhase(c) === 'trade' && !revealed && !labels[c.card_id]?.scored; }
+function shouldAutoMiss(c){
+  if(!c || revealed || labels[c.card_id]?.scored || selectedEntry) return false;
+  return tradePhase(c) === 'expired';
+}
 
 // ---------- render pipeline ----------
 function render(){
@@ -153,8 +179,12 @@ function renderHeader(){
   $('clock').textContent = hm(currentTime());
   const now = tSec(currentTime() + (currentTime().length === 5 ? ':00' : ''));
   const pc = $('phaseChip');
-  if(now < tSec('06:34:00')){ pc.textContent = 'MAP PHASE'; pc.className = 'phase-chip map'; }
-  else if(now <= tSec('07:20:00')){ pc.textContent = 'GAME WINDOW'; pc.className = 'phase-chip game'; }
+  const w = primaryWindow(c);
+  const phase = tradePhase(c);
+  if(now < tSec('06:34:00')){ pc.textContent = 'MAP ONLY'; pc.className = 'phase-chip map'; }
+  else if(phase === 'watch'){ pc.textContent = w ? `WAIT · WINDOW ${w.label}` : 'WATCH'; pc.className = 'phase-chip watch'; }
+  else if(phase === 'trade'){ pc.textContent = 'TRADE WINDOW OPEN'; pc.className = 'phase-chip game pulse'; }
+  else if(now <= tSec('07:20:00')){ pc.textContent = selectedEntry ? 'TRADE PLACED' : 'WINDOW MISSED'; pc.className = selectedEntry ? 'phase-chip game' : 'phase-chip missed'; }
   else { pc.textContent = 'EXTENDED'; pc.className = 'phase-chip ext'; }
   const hb = $('hiddenBadge');
   hb.className = 'status-badge';
@@ -171,20 +201,28 @@ function renderChips(){
 function renderButtons(){
   document.querySelectorAll('.schema-btn').forEach(b => b.classList.toggle('active', b.dataset.v === selectedSchema));
   document.querySelectorAll('.side-btn').forEach(b => b.classList.toggle('active', b.dataset.v === selectedSide));
-  const ready = !!(selectedSchema && selectedSide && (selectedSide === 'SKIP' || selectedEntry));
-  $('submitBtn').disabled = false; // submitting an incomplete read is allowed, it just scores low
-  $('submitBtn').style.opacity = ready ? '1' : '.75';
+  const ready = !!(selectedSide && (selectedSide === 'SKIP' || selectedEntry));
+  $('submitBtn').disabled = false; // incomplete locks become misses/low score
+  $('submitBtn').style.opacity = ready ? '1' : '.78';
+  $('submitBtn').textContent = tradeWindowArmed(current()) ? 'LOCK TRADE ⏎' : 'LOCK / MISS ⏎';
 }
 
 function renderTicket(){
   const c = current(); if(!c) return;
-  const entry = selectedEntry ? `<b>${hm(selectedEntry.time)}</b> @ <b>${fmtPrice(selectedEntry.price)}</b>` : '<b>none</b> — click the 5s chart';
-  const warn = selectedEntry && tSec(selectedEntry.time) < tSec('06:34:00') ? `<div class="warn-line">⚠ Before 06:34 — map only, not a valid game entry.</div>` : '';
-  const late = selectedEntry && tSec(selectedEntry.time) > tSec('07:20:00') ? `<div class="warn-line">⚠ Outside core window — extended trades don't score as the daily schematic.</div>` : '';
-  const ok = selectedEntry && !warn && !late ? `<div class="ok-line">Inside game window.</div>` : '';
+  const w = primaryWindow(c);
+  const phase = tradePhase(c);
+  const entry = selectedEntry ? `<b>${hm(selectedEntry.time)}</b> @ <b>${fmtPrice(selectedEntry.price)}</b>` : '<b>none</b> — click chart during window';
+  const phaseCopy = phase === 'trade'
+    ? `<div class="window-open">WINDOW OPEN · choose LONG/SHORT and click your trade</div>`
+    : phase === 'expired'
+      ? `<div class="warn-line">Window ${w?.label || ''} passed. Locking now counts as missed.</div>`
+      : `<div class="wait-line">Replay from 06:30. Trade prompt opens at <b>${esc(w?.start ? hm(w.start) : '—')}</b>.</div>`;
+  const warn = selectedEntry && tSec(selectedEntry.time) < tSec('06:34:00') ? `<div class="warn-line">Before 06:34 = map only. No trade.</div>` : '';
+  const late = selectedEntry && w && !inWindow(hm(selectedEntry.time), hm(w.start), hm(w.end)) ? `<div class="warn-line">Outside model trade window ${esc(w.label)}.</div>` : '';
+  const ok = selectedEntry && !warn && !late ? `<div class="ok-line">Inside trade window. Lock it.</div>` : '';
   $('tradeTicket').innerHTML = `
-    <div>Read: <b>${esc(selectedSchema || '—')}</b> <span>${selectedSchema ? esc(SCHEMA[selectedSchema] || '') : ''}</span></div>
-    <div>Side: <b>${esc(selectedSide || '—')}</b> · Entry: ${entry}</div>
+    ${phaseCopy}
+    <div class="simple-prompt">Side: <b>${esc(selectedSide || '—')}</b> · Entry: ${entry}</div>
     ${warn}${late}${ok}
   `;
 }
@@ -199,11 +237,9 @@ function renderClues(){
   const o4 = c.zones?.open4_rails || [];
   const z634 = c.zones?.snapshot_634 || [];
   let html = '';
-  html += `<div class="clue rule"><b>Rule</b><span>06:30–06:34 creates the map. Trade only the reaction / flip / continuation after the map exists.</span></div>`;
-  if(o4.length) html += `<div class="clue o4"><b>06:34 Open4 rails</b><span>${o4.map(z => `${esc(z.tag.replace('OPEN4_',''))} ${fmtPrice(z.mid)}`).join(' · ')}</span></div>`;
-  if(z634.length) html += `<div class="clue mb"><b>06:34 MB / LVN</b><span>${z634.map(z => `${esc(z.tag)} [${fmtPrice(z.bot)}–${fmtPrice(z.top)}]`).join(' · ')}</span></div>`;
-  html += `<div class="clue alpha"><b>Alpha boxes</b><span>${lastAlpha ? `Last: ${esc(lastAlpha.time)} ${esc(lastAlpha.dir)} [${fmtPrice(lastAlpha.bot)}–${fmtPrice(lastAlpha.top)}]` : 'No alpha break revealed yet.'}</span></div>`;
-  html += `<div class="clue"><b>Objective</b><span>${revealed ? `Answer: ${esc(c.answer.schematic)} ${esc(c.answer.side)} · normalized ${esc(c.answer.normalized_side || '—')}` : 'Classify the day, pick the actual side, click the one winner. Not in taxonomy? Mark NEW and explain.'}</span></div>`;
+  html += `<div class="clue rule"><b>Objective</b><span>Watch from 06:30. When the trade window opens, pick actual LONG/SHORT and click your trade. Miss the window = miss.</span></div>`;
+  html += `<div class="clue"><b>Window</b><span>${esc(primaryWindow(c)?.label || '—')} · schema stays hidden until result.</span></div>`;
+  if(lastAlpha) html += `<div class="clue alpha"><b>Latest alpha</b><span>${esc(lastAlpha.time)} ${esc(lastAlpha.dir)}</span></div>`;
   $('visibleClues').innerHTML = html;
 }
 
@@ -276,18 +312,23 @@ function confluenceAt(c, entryTime, side){
 function nearest5(c, time){ const i = indexAtOrBefore(c.bars_5s, time); return c.bars_5s[i]; }
 
 // ---------- submit + gamification ----------
-function submitRead(){
+function submitRead(opts={}){
   const c = current(); if(!c) return;
   if(labels[c.card_id]?.scored){ toast('Already scored — NEXT REP or reset the card.'); return; }
-  if(!selectedSchema || !selectedSide){ toast('Pick a schematic and a side first.', 'amber'); return; }
+  const missed = !!opts.missed || (!selectedEntry && tradePhase(c) === 'expired' && selectedSide !== 'SKIP');
+  if(!missed && !selectedSide){ toast('Pick LONG or SHORT when the window opens.', 'amber'); return; }
   const lab = labels[c.card_id] || {};
-  lab.schema = selectedSchema;
-  lab.side = selectedSide;
+  lab.schema = selectedSchema || c.answer.schematic; // schema is backend/debrief unless user explicitly overrides
+  lab.side = missed ? (selectedSide || 'MISS') : selectedSide;
   lab.note = $('note').value || '';
   if(selectedEntry){ lab.entry_i = selectedEntry.i; lab.entry_price = selectedEntry.price; }
   else { delete lab.entry_i; delete lab.entry_price; }
   lab.revealed = true; lab.scored = true;
-  const s = scoreRead(c, lab);
+  let s = scoreRead(c, lab);
+  if(missed){
+    lab.missed_window = true;
+    s = {total:0, parts:{schema:0, side:0, entry:0, timing:0, confluence:0}, detail:[`missed primary window ${primaryWindow(c)?.label || ''}`]};
+  }
   lab.score = s.total; lab.parts = s.parts; lab.detail = s.detail;
   labels[c.card_id] = lab;
   stats.played = (stats.played || 0) + 1;
@@ -342,7 +383,8 @@ function submitRead(){
 
   revealed = true; visible5 = c.bars_5s.length - 1;
   render();
-  if(s.total >= 9) confetti();
+  showOutcomeModal(c, lab, s, missed ? 'MISS' : null);
+  if(s.total >= 9 && !missed) confetti();
 }
 
 // ---------- rails / debrief ----------
@@ -503,6 +545,33 @@ function toast(msg, cls=''){
   setTimeout(() => t.remove(), 2800);
 }
 
+function hideOutcomeModal(){
+  const m = $('outcomeModal'); if(!m) return;
+  m.classList.add('hidden'); outcomeOpen = false;
+}
+function showOutcomeModal(c, lab, score, force=null){
+  const m = $('outcomeModal'); if(!m) return;
+  const ans = c.answer;
+  let kind = force;
+  if(!kind){
+    if((score?.total || 0) < 7) kind = 'LOSS';
+    else kind = Number(ans.r_net || 0) > 0 ? 'WIN' : 'LOSS';
+  }
+  const title = kind === 'MISS' ? 'MISSED WINDOW' : kind === 'WIN' ? 'WIN' : 'LOSS';
+  const cls = kind === 'WIN' ? 'win' : kind === 'MISS' ? 'miss' : 'loss';
+  const yourEntry = lab.entry_i != null ? `${hm(c.bars_5s[lab.entry_i]?.t)} @ ${fmtPrice(lab.entry_price)}` : 'no trade';
+  $('outcomeTitle').textContent = title;
+  $('outcomeModal').className = `outcome-modal ${cls}`;
+  $('outcomeBody').innerHTML = `
+    <div class="outcome-big">${kind === 'WIN' ? '+' : kind === 'MISS' ? '' : ''}${kind === 'MISS' ? 'MISS' : `${ans.r_net ?? '—'}R`}</div>
+    <div class="outcome-sub">${esc(ans.schematic)} · ${esc(ans.side)} · window ${esc(primaryWindow(c)?.label || '—')}</div>
+    <div class="outcome-row"><span>Your trade</span><b>${esc(lab.side || '—')} · ${esc(yourEntry)}</b></div>
+    <div class="outcome-row"><span>Model result</span><b>${esc(ans.model_result || '—')} · score ${score.total}/10</b></div>
+  `;
+  outcomeOpen = true;
+}
+function closeOutcome(){ hideOutcomeModal(); }
+
 function renderHistory(){
   const h = (stats.history || []).slice(-10).reverse();
   $('historyTape').innerHTML = h.map(x =>
@@ -558,14 +627,15 @@ function nextCard(){ pos=clamp(pos+1,0,filtered.length-1); initCard(); }
 function prevCard(){ pos=clamp(pos-1,0,filtered.length-1); initCard(); }
 function randomCard(){ pos=Math.floor(Math.random()*filtered.length); initCard(); }
 function nextRep(){
+  hideOutcomeModal();
   const unplayed = filtered.map((c,i)=>({c,i})).filter(x => !labels[x.c.card_id]?.scored);
   if(unplayed.length){ pos = unplayed[Math.floor(Math.random()*unplayed.length)].i; }
   else { toast('Every card in this filter is played — clearing to random.', 'amber'); pos = Math.floor(Math.random()*filtered.length); }
   initCard();
 }
 function reveal(){ const c=current(); if(!c) return; revealed=true; labels[c.card_id] = {...(labels[c.card_id]||{}), revealed:true}; saveLabels(); visible5=c.bars_5s.length-1; render(); }
-function stepFwd(){ const c=current(); if(!c) return; visible5=clamp(visible5+1,0,c.bars_5s.length-1); draw(); renderHeader(); renderClues(); }
-function stepBack(){ const c=current(); if(!c) return; visible5=clamp(visible5-1,0,c.bars_5s.length-1); draw(); renderHeader(); renderClues(); }
+function stepFwd(){ const c=current(); if(!c) return; visible5=clamp(visible5+1,0,c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); if(shouldAutoMiss(c)){ stopPlay(); submitRead({missed:true}); } }
+function stepBack(){ const c=current(); if(!c) return; visible5=clamp(visible5-1,0,c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); }
 function togglePlay(){ playTimer ? stopPlay() : startPlay(); }
 function startPlay(){
   $('playBtn').textContent='❚❚ PAUSE'; $('playBtn').classList.add('on');
@@ -576,8 +646,10 @@ function jumpTo(time){ const c=current(); if(!c) return; visible5=indexAtOrAfter
 
 // ---------- entry click + hover ----------
 function handleExecClick(e){
+  if(suppressNextClick){ suppressNextClick=false; return; }
   const c = current(); if(!c || labels[c.card_id]?.scored) return;
   if(!execGeom) return;
+  if(!revealed && !tradeWindowArmed(c)){ toast('Wait for the trade window to open.', 'amber'); return; }
   const rect = e.target.getBoundingClientRect(); const x = e.clientX - rect.left;
   if(x < execGeom.left || x > execGeom.right) return;
   const frac = (x - execGeom.left) / execGeom.width;
@@ -597,6 +669,32 @@ function handleExecHover(e){
   if(!revealed && i > visible5){ if(hoverExec){ hoverExec = null; drawExec(); } return; }
   if(!hoverExec || hoverExec.i !== i){ hoverExec = {i}; drawExec(); }
 }
+function handleExecWheel(e){
+  if(!execGeom) return;
+  e.preventDefault();
+  const old = chartZoom;
+  chartZoom = clamp(chartZoom * (e.deltaY < 0 ? 1.12 : .89), .65, 5);
+  if(Math.abs(chartZoom-old) > .01) drawExec();
+}
+function handleExecPointerDown(e){
+  const cv = $('executionChart'); if(!cv || !execGeom) return;
+  dragState = {x:e.clientX, pan:chartPanBars, moved:false};
+  cv.setPointerCapture?.(e.pointerId);
+}
+function handleExecPointerMove(e){
+  if(!dragState || !execGeom) return;
+  const dx = e.clientX - dragState.x;
+  if(Math.abs(dx) > 3) dragState.moved = true;
+  const barsPerPx = execGeom.count / Math.max(1, execGeom.width);
+  chartPanBars = Math.round(dragState.pan - dx * barsPerPx);
+  suppressNextClick = !!dragState.moved;
+  drawExec();
+}
+function handleExecPointerUp(){
+  if(dragState?.moved) suppressNextClick = true;
+  dragState = null;
+}
+function resetChartView(){ chartZoom = 1.15; chartPanBars = 0; drawExec(); toast('Chart view reset.','green'); }
 
 // ---------- drawing ----------
 function resizeCanvas(cv){
@@ -659,7 +757,8 @@ function drawExec(){
   const all=c.bars_5s || [];
   let center = revealed && c.answer.entry ? indexAtOrAfter(all,c.answer.entry+':00') : visible5;
   if(selectedEntry) center = selectedEntry.i;
-  const count = 360; const start=clamp(center-170,0,Math.max(0,all.length-count)); const end=Math.min(all.length-1,start+count); const bars=all.slice(start,end+1);
+  center = clamp(center + chartPanBars, 0, all.length - 1);
+  const count = clamp(Math.round(420 / chartZoom), 70, 760); const start=clamp(center-Math.round(count*.48),0,Math.max(0,all.length-count)); const end=Math.min(all.length-1,start+count); const bars=all.slice(start,end+1);
   const [pMin,pMax]=visiblePriceRange(bars); const geom={left:55,right:w-15,top:12,bottom:h-24,width:w-70,start,end,count:bars.length}; execGeom=geom;
   drawGrid(ctx,geom,pMin,pMax);
   if(effectiveOverlays()){ drawZoneBands(ctx,geom,pMin,pMax,c.zones.open4_rails||[],'rgba(255,200,87,.08)',''); drawZoneBands(ctx,geom,pMin,pMax,c.zones.snapshot_634||[],'rgba(167,139,250,.09)','MB '); drawAlpha(ctx,geom,bars,pMin,pMax,c); }
@@ -738,6 +837,8 @@ function bind(){
   $('hardBtn')?.addEventListener('click',()=>{ meta.hardMode=!meta.hardMode; saveMeta(); toast(meta.hardMode?'HARD MODE — overlays and checklist hidden, ×1.25 XP':'Hard mode off','amber'); render(); });
   $('statsBtn')?.addEventListener('click',()=>openModal('statsModal'));
   $('keysBtn')?.addEventListener('click',()=>openModal('keysModal'));
+  $('outcomeNextBtn')?.addEventListener('click',nextRep);
+  $('outcomeCloseBtn')?.addEventListener('click',closeOutcome);
   document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', closeModals));
   document.querySelectorAll('.modal').forEach(m => m.addEventListener('click', e => { if(e.target === m) closeModals(); }));
   $('exportBtn')?.addEventListener('click',()=>{
@@ -747,7 +848,12 @@ function bind(){
   });
   $('executionChart')?.addEventListener('click',handleExecClick);
   $('executionChart')?.addEventListener('mousemove',handleExecHover);
-  $('executionChart')?.addEventListener('mouseleave',()=>{ if(hoverExec){ hoverExec=null; drawExec(); } });
+  $('executionChart')?.addEventListener('wheel',handleExecWheel,{passive:false});
+  $('executionChart')?.addEventListener('pointerdown',handleExecPointerDown);
+  $('executionChart')?.addEventListener('pointermove',handleExecPointerMove);
+  $('executionChart')?.addEventListener('pointerup',handleExecPointerUp);
+  $('executionChart')?.addEventListener('pointercancel',handleExecPointerUp);
+  $('executionChart')?.addEventListener('mouseleave',()=>{ if(hoverExec){ hoverExec=null; drawExec(); } handleExecPointerUp(); });
   $('note')?.addEventListener('input',()=>{
     const c=current(); if(!c) return;
     if(labels[c.card_id]){ labels[c.card_id].note=$('note').value||''; saveLabels(); }
@@ -764,7 +870,7 @@ function bind(){
     if(e.key==='Enter'){
       e.preventDefault();
       const c=current();
-      if(revealed || labels[c?.card_id]?.scored) nextRep(); else submitRead();
+      if(outcomeOpen || revealed || labels[c?.card_id]?.scored) nextRep(); else submitRead();
       return;
     }
     if(k==='l'){selectedSide='LONG';render();}
@@ -773,6 +879,7 @@ function bind(){
     if(k==='r') reveal();
     if(k==='g') randomCard();
     if(k==='h'){ $('hardBtn').click(); }
+    if(k==='z'){ resetChartView(); }
     if(k==='a'){selectedSchema='A1';render();}
     if(k==='2'){selectedSchema='A2';render();}
     if(k==='b'){selectedSchema='B';render();}
