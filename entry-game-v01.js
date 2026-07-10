@@ -1,4 +1,4 @@
-// NQ ENTRY OPS v0.2 — dark cockpit trainer
+// NQ ENTRY OPS v0.4 — clean chart-first trade-window trainer
 // One day per card. 06:30-06:34 builds the map; core scoring ends at 07:20.
 // Scoring model, deck schema, localStorage keys and export format are unchanged from v0.1.
 
@@ -22,9 +22,14 @@ let familyFilter = 'ALL';
 let cardStartMs = Date.now();
 let hoverExec = null;          // {x, i} crosshair on exec chart
 let lastResult = null;         // {cardId, gain, bonuses[], newBadges[], leveledTo}
+const EXEC_START = '06:30:00';
+const PARENT_START = '06:20:00';
 let chartZoom = 1.15;          // wheel zoom on execution chart
 let chartPanBars = 0;          // drag/pan offset in 5s bars
+let parentZoom = 1.05;         // wheel zoom on parent chart
+let parentPanBars = 0;         // drag/pan offset in 1m bars
 let dragState = null;
+let parentDragState = null;
 let suppressNextClick = false;
 let outcomeOpen = false;
 
@@ -99,7 +104,7 @@ function initCard(){
   stopPlay();
   const lab = labels[c.card_id] || {};
   revealed = !!lab.revealed;
-  visible5 = revealed ? c.bars_5s.length - 1 : indexAtOrAfter(c.bars_5s, '06:30:00');
+  visible5 = revealed ? c.bars_5s.length - 1 : indexAtOrAfter(c.bars_5s, EXEC_START);
   selectedSchema = lab.schema || null;
   selectedSide = lab.side || null;
   selectedEntry = lab.entry_i != null ? {i: lab.entry_i, price: lab.entry_price, time: c.bars_5s[lab.entry_i]?.t} : null;
@@ -108,6 +113,8 @@ function initCard(){
   hoverExec = null;
   chartZoom = 1.15;
   chartPanBars = 0;
+  parentZoom = 1.05;
+  parentPanBars = 0;
   outcomeOpen = false;
   hideOutcomeModal();
   render();
@@ -634,15 +641,15 @@ function nextRep(){
   initCard();
 }
 function reveal(){ const c=current(); if(!c) return; revealed=true; labels[c.card_id] = {...(labels[c.card_id]||{}), revealed:true}; saveLabels(); visible5=c.bars_5s.length-1; render(); }
-function stepFwd(){ const c=current(); if(!c) return; visible5=clamp(visible5+1,0,c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); if(shouldAutoMiss(c)){ stopPlay(); submitRead({missed:true}); } }
-function stepBack(){ const c=current(); if(!c) return; visible5=clamp(visible5-1,0,c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); }
+function stepFwd(){ const c=current(); if(!c) return; visible5=clamp(visible5+1,indexAtOrAfter(c.bars_5s,EXEC_START),c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); if(shouldAutoMiss(c)){ stopPlay(); submitRead({missed:true}); } }
+function stepBack(){ const c=current(); if(!c) return; visible5=clamp(visible5-1,indexAtOrAfter(c.bars_5s,EXEC_START),c.bars_5s.length-1); draw(); renderHeader(); renderTicket(); renderClues(); }
 function togglePlay(){ playTimer ? stopPlay() : startPlay(); }
 function startPlay(){
   $('playBtn').textContent='❚❚ PAUSE'; $('playBtn').classList.add('on');
   playTimer=setInterval(()=>{ const c=current(); if(!c || visible5>=c.bars_5s.length-1){ stopPlay(); if(c && labels[c.card_id]?.scored && !revealed){ revealed=true; render(); } return; } stepFwd(); }, 65);
 }
 function stopPlay(){ if(playTimer){ clearInterval(playTimer); playTimer=null; } const pb=$('playBtn'); if(pb){ pb.textContent='▶ PLAY'; pb.classList.remove('on'); } }
-function jumpTo(time){ const c=current(); if(!c) return; visible5=indexAtOrAfter(c.bars_5s,time); draw(); renderHeader(); renderClues(); }
+function jumpTo(time){ const c=current(); if(!c) return; visible5=clamp(indexAtOrAfter(c.bars_5s,time), indexAtOrAfter(c.bars_5s,EXEC_START), c.bars_5s.length-1); draw(); renderHeader(); renderClues(); }
 
 // ---------- entry click + hover ----------
 function handleExecClick(e){
@@ -694,7 +701,27 @@ function handleExecPointerUp(){
   if(dragState?.moved) suppressNextClick = true;
   dragState = null;
 }
-function resetChartView(){ chartZoom = 1.15; chartPanBars = 0; drawExec(); toast('Chart view reset.','green'); }
+function resetChartView(){ chartZoom = 1.15; chartPanBars = 0; parentZoom = 1.05; parentPanBars = 0; draw(); toast('Chart views reset.','green'); }
+function handleParentWheel(e){
+  if(!parentGeom) return;
+  e.preventDefault();
+  const old = parentZoom;
+  parentZoom = clamp(parentZoom * (e.deltaY < 0 ? 1.12 : .89), .75, 4);
+  if(Math.abs(parentZoom-old) > .01) drawParent();
+}
+function handleParentPointerDown(e){
+  const cv = $('parentChart'); if(!cv || !parentGeom) return;
+  parentDragState = {x:e.clientX, pan:parentPanBars};
+  cv.setPointerCapture?.(e.pointerId);
+}
+function handleParentPointerMove(e){
+  if(!parentDragState || !parentGeom) return;
+  const dx = e.clientX - parentDragState.x;
+  const barsPerPx = parentGeom.count / Math.max(1, parentGeom.width);
+  parentPanBars = Math.round(parentDragState.pan - dx * barsPerPx);
+  drawParent();
+}
+function handleParentPointerUp(){ parentDragState = null; }
 
 // ---------- drawing ----------
 function resizeCanvas(cv){
@@ -723,17 +750,27 @@ function drawGrid(ctx,geom,pMin,pMax){
   for(let i=0;i<=5;i++){ const y=top+ch*i/5; const px=pMax-(pMax-pMin)*i/5; ctx.beginPath(); ctx.moveTo(left,y); ctx.lineTo(right,y); ctx.stroke(); ctx.fillText(px.toFixed(0), 5, y+3); }
 }
 function xFromTime(bars,time,geom){
+  if(!bars.length) return geom.left;
+  const target=tSec(time);
+  if(target <= tSec(bars[0].t)) return geom.left;
+  if(target >= tSec(bars[bars.length-1].t)) return geom.right;
   const idx = indexAtOrAfter(bars,time); return geom.left + geom.width * idx / Math.max(1,bars.length-1);
 }
 function drawVertical(ctx,geom,bars,time,color,label){
+  if(!bars.length) return;
+  const target=tSec(time);
+  if(target < tSec(bars[0].t) || target > tSec(bars[bars.length-1].t)) return;
   const x=xFromTime(bars,time,geom); ctx.strokeStyle=color; ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.beginPath(); ctx.moveTo(x,geom.top); ctx.lineTo(x,geom.bottom); ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle=color; ctx.font='9px JetBrains Mono, SF Mono, monospace'; ctx.fillText(label,x+3,geom.top+10);
 }
 function drawZoneBands(ctx,geom,pMin,pMax,zones,color,labelPrefix){
   const ch=geom.bottom-geom.top;
   zones.forEach(z=>{
-    const y1=yFor(z.top,geom.top,pMin,pMax,ch), y2=yFor(z.bot,geom.top,pMin,pMax,ch);
-    ctx.fillStyle=color; ctx.fillRect(geom.left, y1, geom.right-geom.left, Math.max(2,y2-y1));
-    ctx.fillStyle='rgba(219,231,251,.55)'; ctx.font='8px JetBrains Mono, SF Mono, monospace'; ctx.fillText(`${labelPrefix}${z.tag}`, geom.left+4, y1+9);
+    const mid = Number.isFinite(Number(z.mid)) ? Number(z.mid) : (Number(z.top)+Number(z.bot))/2;
+    const y=yFor(mid,geom.top,pMin,pMax,ch);
+    ctx.strokeStyle=color.replace(/\.0?\d+\)/, '.55)');
+    ctx.lineWidth=1;
+    ctx.setLineDash([2,5]);
+    ctx.beginPath(); ctx.moveTo(geom.left,y); ctx.lineTo(geom.right,y); ctx.stroke(); ctx.setLineDash([]);
   });
 }
 function visiblePriceRange(bars){
@@ -744,25 +781,43 @@ function visiblePriceRange(bars){
 }
 function drawParent(){
   const c=current(), cv=$('parentChart'); if(!c||!cv) return; const {ctx,w,h}=resizeCanvas(cv); ctx.clearRect(0,0,w,h);
-  const bars=c.bars_1m || []; const [pMin,pMax]=visiblePriceRange(bars); const geom={left:55,right:w-15,top:12,bottom:h-24,width:w-70}; parentGeom=geom;
+  const all=c.bars_1m || [];
+  const minIdx=indexAtOrAfter(all,PARENT_START);
+  const maxIdx=revealed ? all.length-1 : indexAtOrBefore(all,currentTime());
+  let center=indexAtOrAfter(all,currentTime());
+  if(revealed && c.answer.entry) center=indexAtOrAfter(all,c.answer.entry+':00');
+  center=clamp(center+parentPanBars,minIdx,maxIdx);
+  const count=clamp(Math.round(75/parentZoom),18,100);
+  const start=clamp(center-Math.round(count*.42),minIdx,Math.max(minIdx,maxIdx-count));
+  const end=Math.min(maxIdx,start+count);
+  const bars=all.slice(start,end+1);
+  const [pMin,pMax]=visiblePriceRange(bars); const geom={left:55,right:w-15,top:12,bottom:h-24,width:w-70,start,end,count:bars.length}; parentGeom=geom;
   drawGrid(ctx,geom,pMin,pMax);
-  if(effectiveOverlays()){ drawZoneBands(ctx,geom,pMin,pMax,c.zones.open4_rails||[],'rgba(255,200,87,.09)',''); drawZoneBands(ctx,geom,pMin,pMax,c.zones.snapshot_634||[],'rgba(167,139,250,.1)','MB '); }
+  if(effectiveOverlays()){ drawZoneBands(ctx,geom,pMin,pMax,c.zones.open4_rails||[],'rgba(255,200,87,.38)',''); }
   drawCandles(ctx,bars,geom,pMin,pMax,{hideFuture:true});
-  drawVertical(ctx,geom,bars,'06:34:00','rgba(255,200,87,.85)','06:34 map'); drawVertical(ctx,geom,bars,'07:20:00','rgba(255,77,107,.8)','07:20 core');
+  drawVertical(ctx,geom,bars,'06:30:00','rgba(120,145,180,.55)','06:30');
+  drawVertical(ctx,geom,bars,'06:34:00','rgba(255,200,87,.85)','map');
+  drawVertical(ctx,geom,bars,'07:20:00','rgba(255,77,107,.8)','cut');
   if(revealed && c.answer.primary) drawAnswerWindow(ctx,geom,bars,c.answer.primary[0],c.answer.primary[1]);
   drawTimeLabels(ctx,geom,bars);
 }
 function drawExec(){
   const c=current(), cv=$('executionChart'); if(!c||!cv) return; const {ctx,w,h}=resizeCanvas(cv); ctx.clearRect(0,0,w,h);
   const all=c.bars_5s || [];
+  const minIdx=indexAtOrAfter(all,EXEC_START);
+  const maxIdx=revealed ? all.length-1 : visible5;
   let center = revealed && c.answer.entry ? indexAtOrAfter(all,c.answer.entry+':00') : visible5;
   if(selectedEntry) center = selectedEntry.i;
-  center = clamp(center + chartPanBars, 0, all.length - 1);
-  const count = clamp(Math.round(420 / chartZoom), 70, 760); const start=clamp(center-Math.round(count*.48),0,Math.max(0,all.length-count)); const end=Math.min(all.length-1,start+count); const bars=all.slice(start,end+1);
+  center = clamp(center + chartPanBars, minIdx, maxIdx);
+  const count = clamp(Math.round(420 / chartZoom), 70, 760);
+  const start=clamp(center-Math.round(count*.48),minIdx,Math.max(minIdx,maxIdx-count));
+  const end=Math.min(maxIdx,start+count);
+  const bars=all.slice(start,end+1);
   const [pMin,pMax]=visiblePriceRange(bars); const geom={left:55,right:w-15,top:12,bottom:h-24,width:w-70,start,end,count:bars.length}; execGeom=geom;
   drawGrid(ctx,geom,pMin,pMax);
-  if(effectiveOverlays()){ drawZoneBands(ctx,geom,pMin,pMax,c.zones.open4_rails||[],'rgba(255,200,87,.08)',''); drawZoneBands(ctx,geom,pMin,pMax,c.zones.snapshot_634||[],'rgba(167,139,250,.09)','MB '); drawAlpha(ctx,geom,bars,pMin,pMax,c); }
+  if(effectiveOverlays()){ drawZoneBands(ctx,geom,pMin,pMax,c.zones.open4_rails||[],'rgba(255,200,87,.38)',''); }
   drawCandles(ctx,bars,geom,pMin,pMax,{hideFuture:true, thin:true});
+  drawVertical(ctx,geom,bars,'06:30:00','rgba(120,145,180,.55)','06:30');
   drawVertical(ctx,geom,bars,'06:34:00','rgba(255,200,87,.85)','map'); drawVertical(ctx,geom,bars,'07:20:00','rgba(255,77,107,.8)','cut');
   if(revealed && c.answer.primary) drawAnswerWindow(ctx,geom,bars,c.answer.primary[0],c.answer.primary[1]);
   if(selectedEntry) drawEntry(ctx,geom,bars,pMin,pMax,selectedEntry);
@@ -784,17 +839,10 @@ function drawHover(ctx,geom,bars,pMin,pMax,all){
   ctx.strokeStyle='rgba(55,200,255,.4)'; ctx.strokeRect(bx,geom.bottom-16,tw,13);
   ctx.fillStyle='rgba(55,200,255,.95)'; ctx.fillText(tag,bx+5,geom.bottom-6);
 }
-function drawAlpha(ctx,geom,bars,pMin,pMax,c){
-  const ch=geom.bottom-geom.top;
-  (c.alpha_breaks||[]).forEach(a=>{
-    if(!revealed && tSec(a.time)>visibleTimeSec()) return;
-    const x=xFromTime(bars,a.time,geom); if(x<geom.left-20||x>geom.right+20) return;
-    const y1=yFor(a.top,geom.top,pMin,pMax,ch), y2=yFor(a.bot,geom.top,pMin,pMax,ch);
-    ctx.fillStyle=a.dir==='LONG'?'rgba(55,200,255,.1)':'rgba(255,77,107,.1)'; ctx.fillRect(Math.max(geom.left,x-30), y1, 70, Math.max(2,y2-y1));
-    ctx.strokeStyle=a.dir==='LONG'?'rgba(55,200,255,.7)':'rgba(255,77,107,.7)'; ctx.strokeRect(Math.max(geom.left,x-30), y1, 70, Math.max(2,y2-y1));
-  });
-}
 function drawAnswerWindow(ctx,geom,bars,start,end){
+  if(!bars.length) return;
+  const s=tSec(start+':00'), e=tSec(end+':00'), lo=tSec(bars[0].t), hi=tSec(bars[bars.length-1].t);
+  if(e < lo || s > hi) return;
   const x1=xFromTime(bars,start+':00',geom), x2=xFromTime(bars,end+':00',geom);
   ctx.fillStyle='rgba(45,240,160,.1)'; ctx.fillRect(Math.max(geom.left,x1),geom.top,Math.max(3,x2-x1),geom.bottom-geom.top);
   ctx.strokeStyle='rgba(45,240,160,.8)'; ctx.strokeRect(Math.max(geom.left,x1),geom.top,Math.max(3,x2-x1),geom.bottom-geom.top);
@@ -854,6 +902,12 @@ function bind(){
   $('executionChart')?.addEventListener('pointerup',handleExecPointerUp);
   $('executionChart')?.addEventListener('pointercancel',handleExecPointerUp);
   $('executionChart')?.addEventListener('mouseleave',()=>{ if(hoverExec){ hoverExec=null; drawExec(); } handleExecPointerUp(); });
+  $('parentChart')?.addEventListener('wheel',handleParentWheel,{passive:false});
+  $('parentChart')?.addEventListener('pointerdown',handleParentPointerDown);
+  $('parentChart')?.addEventListener('pointermove',handleParentPointerMove);
+  $('parentChart')?.addEventListener('pointerup',handleParentPointerUp);
+  $('parentChart')?.addEventListener('pointercancel',handleParentPointerUp);
+  $('parentChart')?.addEventListener('mouseleave',handleParentPointerUp);
   $('note')?.addEventListener('input',()=>{
     const c=current(); if(!c) return;
     if(labels[c.card_id]){ labels[c.card_id].note=$('note').value||''; saveLabels(); }

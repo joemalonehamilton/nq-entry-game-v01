@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NQ ENTRY OPS · Trade Window Trainer v0.3</title>
-  <link rel="stylesheet" href="entry-pattern-game.css?v=0.3" />
+  <title>NQ ENTRY OPS · Trade Window Trainer v0.4</title>
+  <link rel="stylesheet" href="entry-pattern-game.css?v=0.4" />
 </head>
 <body>
   <div class="app">
@@ -93,11 +93,11 @@
         </div>
 
         <div class="pane parent-pane">
-          <div class="pane-label">PARENT · 1M</div>
+          <div class="pane-label">PARENT · 1M · SMALL CONTEXT · WHEEL ZOOM · DRAG PAN</div>
           <canvas id="parentChart"></canvas>
         </div>
         <div class="pane exec-pane">
-          <div class="pane-label">EXECUTION · 5S · WHEEL ZOOM · DRAG PAN · CLICK ONLY WHEN WINDOW OPENS</div>
+          <div class="pane-label">EXECUTION · 5S · STARTS 06:30 · WHEEL ZOOM · DRAG PAN</div>
           <canvas id="executionChart"></canvas>
         </div>
 
@@ -192,7 +192,7 @@
         <div><kbd>⏎</kbd><span>lock it in · next rep after reveal</span></div>
         <div><kbd>R</kbd><span>peek answer (no score)</span></div>
         <div><kbd>G</kbd><span>random card</span></div>
-        <div><kbd>H</kbd><span>hard mode toggle</span></div>
+        <div><kbd>Z</kbd><span>reset parent + execution chart zoom/pan</span></div>
         <div><kbd>?</kbd><span>this cheat sheet</span></div>
       </div>
       <div class="modal-note">Click the 5s chart to mark your entry. No entries before 06:34 — the opening 4 minutes only build the map.</div>
@@ -221,6 +221,6 @@
 
   <div id="toastLayer" class="toast-layer"></div>
 
-  <script src="entry-game-v01.js?v=0.3"></script>
+  <script src="entry-game-v01.js?v=0.4"></script>
 </body>
 </html>
