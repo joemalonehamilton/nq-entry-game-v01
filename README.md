@@ -1,39 +1,52 @@
-# NQ Entry Game v0.1
+# NQ ENTRY OPS — v0.2 (cockpit redesign)
 
-Static browser training game for NQ market schematics.
-
-Live app: https://nq-entry-game-v01.vercel.app
+Static browser training game for NQ market schematics. One card = one trading day,
+normalized so the opening 4-minute impulse points up. Study the replay, classify the
+day (A1 / A2 / B / C1 / C-F / D2), pick the actual market side, click your entry on
+the 5s chart, lock it in, get debriefed.
 
 ## Deck
 
-Quality-model v0.1 deck: 97 cards
-
-- A1: 37
-- A2: 7
-- B: 9
-- C: 9
-- C-F: 12
-- D2: 23
+Quality-model deck: 97 cards — A1: 37 · A2: 7 · B: 9 · C: 9 · C-F: 12 · D2: 23
 
 ## Run locally
 
 ```bash
 python3 -m http.server 8910 --bind 127.0.0.1
-open http://127.0.0.1:8910
+# open http://127.0.0.1:8910
 ```
+
+No build step, no backend. Deploys as-is to Vercel (static).
 
 ## Files
 
-- `index.html` — static app shell
-- `entry-game-v01.js` — game logic, canvas chart rendering, scoring, export
-- `entry-pattern-game.css` — base styles
-- `decks/entry_game_v01_quality_deck.json` — 97-card deck
-- `CLAUDE_REDESIGN_HANDOFF.md` — prompt/brief for redesigning and gamifying the UI
+- `index.html` — HUD, filter strip, chart cockpit, decision rail, modals
+- `entry-game-v01.js` — game logic, canvas rendering, scoring, gamification, export
+- `entry-pattern-game.css` — dark cockpit theme
+- `decks/entry_game_v01_quality_deck.json` — 97-card quality deck (~15.7 MB)
+- `CLAUDE_REDESIGN_HANDOFF.md` — the redesign brief this version was built from
 
-## Claude redesign brief
+## What's new in v0.2
 
-If using Claude/Claude Code, start with:
+- Dark cockpit HUD: level + XP bar, streak, daily session progress (20-rep goal), avg, win%
+- XP bonuses: clean classification, perfect entry, no-chase discipline, fast read; hard mode ×1.25
+- 10 badges (D2 Sniper, C-Family Specialist, streaks, full session, etc.) — see STATS
+- Post-reveal debrief: grade ring, animated score breakdown bars, answer facts, "what you missed"
+- Hard mode (H): hides overlays + live checklist
+- Family practice filters, unplayed-only toggle, keyboard cheat sheet (?)
+- Frictionless NEXT REP (Enter) → random unplayed card
+- Hover crosshair on the 5s execution chart
 
-```text
-Read CLAUDE_REDESIGN_HANDOFF.md first. Redesign and gamify this static NQ Entry Game UI. Preserve the deck schema, chart replay, scoring, correction/export flow, and static Vercel deployability. Make it feel like an addictive dark trading cockpit training game, not an audit page. Test locally before finishing.
-```
+## Rules preserved from v0.1
+
+- 06:30–06:34 is map only; no valid entry before 06:34. Core game ends 07:20.
+- Chart is normalized Open4-up; the answer side is the actual market side.
+- C-F and D2 labels are research-derived (quality model v2), not live-proven. D1 excluded.
+- Deck schema, scoring model, localStorage keys and the reps-export JSON are unchanged,
+  so old progress and exports remain compatible. (One fix: total score is now capped at 10 —
+  v0.1 could show 11/10.) Export now also includes the `meta` gamification block (additive).
+
+## Keys
+
+SPACE play/pause · ←/→ step · A/2/B/C/F/D classify · N new-box · L/S/K side ·
+click 5s chart = entry · Enter lock-in / next rep · R peek · G random · H hard mode · ? help
