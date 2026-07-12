@@ -1,0 +1,128 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Ascend / Kevin
+
+//@version=6
+indicator("Ascend Tested Alpha Box Edge Click v1", "Ascend Alpha Edge v1", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=100)
+
+// IMPORTANT
+// This reproduces the causal 5-second compression-box engine used in the
+// 2026-07-12 Entry Game backtest. It is NOT the original AlgoAlpha pivot/WMA
+// box engine. Direction, day-specific Entry Game window, and mapped-zone
+// permission remain external context; EDGE HOLD is a final-click marker only.
+
+gTime = "Time"
+tz = input.string("America/Los_Angeles", "Timezone", group=gTime)
+boxSession = input.session("0530-0720", "Box detection session", group=gTime)
+showOutside = input.bool(false, "Allow detection outside session", group=gTime)
+
+gBox = "Tested Alpha box engine"
+boxLen = input.int(36, "Range lookback bars", minval=10, maxval=300, group=gBox, tooltip="36 bars = 3 minutes on a 5-second chart")
+atrPeriod = input.int(14, "TR-SMA period", minval=2, maxval=100, group=gBox)
+atrMult = input.float(4.0, "Range ATR multiple", minval=0.25, step=0.25, group=gBox)
+maxRangePts = input.float(85.0, "Maximum compression range points", minval=1.0, step=0.25, group=gBox)
+minCompressionBars = input.int(6, "Consecutive compressed bars", minval=1, maxval=60, group=gBox)
+breakBufferPts = input.float(1.0, "Break close buffer points", minval=0.0, step=0.25, group=gBox)
+overlapCooldownBars = input.int(18, "Bars after break before a new box", minval=0, maxval=300, group=gBox)
+
+gClick = "Edge hold click"
+retestMaxBars = input.int(36, "Retest valid bars after break", minval=1, maxval=240, group=gClick)
+holdTolerancePts = input.float(1.0, "Edge hold tolerance points", minval=0.0, step=0.25, group=gClick)
+showBreaks = input.bool(true, "Show box-break markers", group=gClick)
+showClicks = input.bool(true, "Show EDGE HOLD click markers", group=gClick)
+
+inSession = not na(time(timeframe.period, boxSession, tz)) or showOutside
+newDay = ta.change(time("D")) != 0
+isFiveSecond = timeframe.isseconds and timeframe.multiplier == 5
+
+// Python used the arithmetic mean of the last 14 true ranges, not Wilder ATR.
+tr = ta.tr(true)
+trMean = ta.sma(tr, atrPeriod)
+rangeHi = ta.highest(high, boxLen)
+rangeLo = ta.lowest(low, boxLen)
+rangePts = rangeHi - rangeLo
+rangeThreshold = math.max(maxRangePts, trMean * atrMult)
+compressedNow = inSession and bar_index >= boxLen and not na(trMean) and rangePts <= rangeThreshold
+
+var int compressionCount = 0
+var bool boxActive = false
+var float activeTop = na
+var float activeBot = na
+var int activeStart = na
+var int lastBreakBar = na
+var int lastBreakDir = 0
+var float lastTop = na
+var float lastBot = na
+var bool edgeClickUsed = false
+var box activeBox = na
+var line activeMid = na
+
+if newDay
+    compressionCount := 0
+    boxActive := false
+    activeTop := na
+    activeBot := na
+    activeStart := na
+    lastBreakBar := na
+    lastBreakDir := 0
+    lastTop := na
+    lastBot := na
+    edgeClickUsed := false
+    activeBox := na
+    activeMid := na
+
+compressionCount := compressedNow ? compressionCount + 1 : 0
+cooldownOk = na(lastBreakBar) or bar_index - lastBreakBar > overlapCooldownBars
+newBoxAllowed = compressionCount >= minCompressionBars and not boxActive and cooldownOk
+
+if newBoxAllowed
+    boxActive := true
+    activeTop := rangeHi
+    activeBot := rangeLo
+    activeStart := bar_index
+    activeBox := box.new(activeStart, activeTop, bar_index, activeBot, xloc=xloc.bar_index, bgcolor=color.new(color.gray, 88), border_color=color.yellow, border_width=2)
+    activeMid := line.new(activeStart, (activeTop + activeBot) / 2.0, bar_index, (activeTop + activeBot) / 2.0, xloc=xloc.bar_index, color=color.new(color.gray, 45), style=line.style_dashed)
+
+bool breakLong = false
+bool breakShort = false
+if boxActive and not na(activeBox)
+    box.set_right(activeBox, bar_index)
+    line.set_x2(activeMid, bar_index)
+    breakLong := close > activeTop + breakBufferPts
+    breakShort := close < activeBot - breakBufferPts
+    if breakLong or breakShort
+        lastBreakBar := bar_index
+        lastBreakDir := breakLong ? 1 : -1
+        lastTop := activeTop
+        lastBot := activeBot
+        edgeClickUsed := false
+        box.set_border_color(activeBox, breakLong ? color.lime : color.red)
+        box.set_bgcolor(activeBox, color.new(breakLong ? color.lime : color.red, 91))
+        line.set_color(activeMid, color.new(breakLong ? color.lime : color.red, 45))
+        boxActive := false
+        compressionCount := 0
+        activeBox := na
+        activeMid := na
+
+freshBreak = not na(lastBreakBar) and bar_index > lastBreakBar and bar_index - lastBreakBar <= retestMaxBars
+longEdgeHold = freshBreak and lastBreakDir == 1 and not edgeClickUsed and low <= lastTop + holdTolerancePts and close >= lastTop - holdTolerancePts
+shortEdgeHold = freshBreak and lastBreakDir == -1 and not edgeClickUsed and high >= lastBot - holdTolerancePts and close <= lastBot + holdTolerancePts
+edgeClick = longEdgeHold or shortEdgeHold
+if edgeClick
+    edgeClickUsed := true
+
+plotshape(showBreaks and breakLong, title="Alpha Box Break Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 25), size=size.tiny, text="BOX↑", textcolor=color.white)
+plotshape(showBreaks and breakShort, title="Alpha Box Break Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 25), size=size.tiny, text="BOX↓", textcolor=color.white)
+plotshape(showClicks and longEdgeHold, title="Alpha Edge Hold Long", style=shape.labelup, location=location.belowbar, color=color.lime, size=size.small, text="EDGE\nHOLD", textcolor=color.black)
+plotshape(showClicks and shortEdgeHold, title="Alpha Edge Hold Short", style=shape.labeldown, location=location.abovebar, color=color.red, size=size.small, text="EDGE\nHOLD", textcolor=color.white)
+
+bgcolor(not isFiveSecond ? color.new(color.orange, 90) : na, title="Wrong timeframe warning")
+var label tfWarning = na
+if barstate.islast
+    label.delete(tfWarning)
+    if not isFiveSecond
+        tfWarning := label.new(bar_index, high, "USE ON 5-SECOND CHART", style=label.style_label_down, color=color.orange, textcolor=color.black)
+
+alertcondition(breakLong, "Alpha Box Break Long", "Tested Alpha box broke LONG")
+alertcondition(breakShort, "Alpha Box Break Short", "Tested Alpha box broke SHORT")
+alertcondition(longEdgeHold, "Alpha Edge Hold Long", "LONG edge retest held — check Entry Game direction/time/zone before clicking")
+alertcondition(shortEdgeHold, "Alpha Edge Hold Short", "SHORT edge retest held — check Entry Game direction/time/zone before clicking")
