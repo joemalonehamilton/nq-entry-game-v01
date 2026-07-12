@@ -1,0 +1,217 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Ascend / Kevin
+
+//@version=6
+indicator("Ascend Filtered Alpha Box Primary Click v1", "Ascend Filtered Box v1", overlay=true, max_boxes_count=300, max_labels_count=300, max_lines_count=100)
+
+// PURPOSE
+// This is the FILTERED/manual-gate companion to Ascend Tested Alpha Box Edge Click v1.
+// It does not pretend to infer the day schematic. The trader must arm A1/A2/B,
+// choose the already-established direction, set the day-specific execution window,
+// and enter mapped zones. Only a same-direction, in-window, zone-permitted box break
+// can produce a PRIMARY CLICK. The tested result was TP15/SL10 over five minutes;
+// this is not a "runner of the day" model.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manual Entry Game context — these are the important anti-spam filters.
+// ─────────────────────────────────────────────────────────────────────────────
+gContext = "1. Entry Game context — REQUIRED"
+contextArmed = input.bool(false, "ARM qualified setup", group=gContext, tooltip="Leave OFF until direction, schematic, time, and entry area are mapped.")
+schematic = input.string("OTHER / NOT ARMED", "Active schematic", options=["A1", "A2", "B", "OTHER / NOT ARMED"], group=gContext)
+bias = input.string("LONG", "Established direction", options=["LONG", "SHORT"], group=gContext, tooltip="The box does not choose direction. Set this from the schematic.")
+tz = input.string("America/Los_Angeles", "Timezone", group=gContext)
+executionWindow = input.session("0630-0720", "Day-specific execution window", group=gContext, tooltip="Tighten this to the mapped primary click window whenever possible.")
+oneClickPerDay = input.bool(true, "Only first qualified PRIMARY CLICK per day", group=gContext)
+
+// Manual mapped zones. Use actual NQ prices from the day's Open-4 / 06:34 snapshot / MB map.
+gZone = "2. Mapped execution zones — REQUIRED"
+requireZone = input.bool(true, "Require mapped-zone permission", group=gZone)
+zoneCurrentPad = input.float(25.0, "Current-price zone padding (points)", minval=0.0, step=0.25, group=gZone)
+zoneTouchTol = input.float(3.0, "Prior-touch tolerance (points)", minval=0.0, step=0.25, group=gZone)
+zoneLookbackBars = input.int(120, "Prior-touch lookback bars", minval=1, maxval=600, group=gZone, tooltip="120 bars = 10 minutes on 5-second chart")
+z1On = input.bool(false, "Enable Open-4 zone", inline="z1", group=gZone)
+z1A = input.float(0.0, "Top", inline="z1", group=gZone)
+z1B = input.float(0.0, "Bottom", inline="z1", group=gZone)
+z2On = input.bool(false, "Enable 06:34 snapshot zone", inline="z2", group=gZone)
+z2A = input.float(0.0, "Top", inline="z2", group=gZone)
+z2B = input.float(0.0, "Bottom", inline="z2", group=gZone)
+z3On = input.bool(false, "Enable MB zone (current only)", inline="z3", group=gZone)
+z3A = input.float(0.0, "Top", inline="z3", group=gZone)
+z3B = input.float(0.0, "Bottom", inline="z3", group=gZone)
+
+// Exact tested v1 box defaults.
+gBox = "3. Tested compression-36 engine"
+boxSession = input.session("0530-0720", "Box detection session", group=gBox)
+boxLen = input.int(36, "Range lookback bars", minval=10, maxval=300, group=gBox)
+atrPeriod = input.int(14, "TR-SMA period", minval=2, maxval=100, group=gBox)
+atrMult = input.float(4.0, "Range TR-SMA multiple", minval=0.25, step=0.25, group=gBox)
+maxRangePts = input.float(85.0, "Compression floor points", minval=1.0, step=0.25, group=gBox)
+minCompressionBars = input.int(6, "Consecutive compressed bars", minval=1, maxval=60, group=gBox)
+breakBufferPts = input.float(1.0, "Break close buffer points", minval=0.0, step=0.25, group=gBox)
+overlapCooldownBars = input.int(18, "Bars after break before new box", minval=0, maxval=300, group=gBox)
+retestMaxBars = input.int(24, "Retest valid bars after break", minval=1, maxval=240, group=gBox)
+holdTolerancePts = input.float(1.0, "Edge hold close tolerance", minval=0.0, step=0.25, group=gBox)
+
+// Display defaults hide raw research noise.
+gDisplay = "4. Display"
+showQualifiedBreak = input.bool(true, "Show QUALIFIED BOX break", group=gDisplay)
+showPrimaryClick = input.bool(true, "Show PRIMARY CLICK", group=gDisplay)
+showAllResearchBoxes = input.bool(false, "Show all raw research boxes (spammy)", group=gDisplay)
+showGatePanel = input.bool(true, "Show gate-status panel", group=gDisplay)
+
+inBoxSession = not na(time(timeframe.period, boxSession, tz))
+inExecutionWindow = not na(time(timeframe.period, executionWindow, tz))
+newDay = ta.change(time("D")) != 0
+isFiveSecond = timeframe.isseconds and timeframe.multiplier == 5
+familyOk = schematic == "A1" or schematic == "A2" or schematic == "B"
+
+z1Top = math.max(z1A, z1B)
+z1Bot = math.min(z1A, z1B)
+z2Top = math.max(z2A, z2B)
+z2Bot = math.min(z2A, z2B)
+z3Top = math.max(z3A, z3B)
+z3Bot = math.min(z3A, z3B)
+z1Current = z1On and close >= z1Bot - zoneCurrentPad and close <= z1Top + zoneCurrentPad
+z2Current = z2On and close >= z2Bot - zoneCurrentPad and close <= z2Top + zoneCurrentPad
+z3Current = z3On and close >= z3Bot - zoneCurrentPad and close <= z3Top + zoneCurrentPad
+z1Touch = z1On and high >= z1Bot - zoneTouchTol and low <= z1Top + zoneTouchTol
+z2Touch = z2On and high >= z2Bot - zoneTouchTol and low <= z2Top + zoneTouchTol
+z1Ago = ta.barssince(z1Touch)
+z2Ago = ta.barssince(z2Touch)
+z1Recent = z1On and not na(z1Ago) and z1Ago <= zoneLookbackBars
+z2Recent = z2On and not na(z2Ago) and z2Ago <= zoneLookbackBars
+// The research gate allowed prior-touch memory for Open-4/snapshot, but MB was current-location only.
+z3Recent = false
+anyZoneOn = z1On or z2On or z3On
+zonePermission = not requireZone or (anyZoneOn and (z1Current or z2Current or z3Current or z1Recent or z2Recent or z3Recent))
+
+// Python used arithmetic TR mean, not Wilder ATR.
+trMean = ta.sma(ta.tr(true), atrPeriod)
+rangeHi = ta.highest(high, boxLen)
+rangeLo = ta.lowest(low, boxLen)
+rangePts = rangeHi - rangeLo
+rangeThreshold = math.max(maxRangePts, trMean * atrMult)
+compressedNow = inBoxSession and bar_index >= boxLen and not na(trMean) and rangePts <= rangeThreshold
+
+var int compressionCount = 0
+var bool boxActive = false
+var float activeTop = na
+var float activeBot = na
+var int activeStart = na
+var int lastRawBreakBar = na
+var int lastBreakBar = na
+var int lastBreakDir = 0
+var float lastTop = na
+var float lastBot = na
+var bool qualifiedBreakActive = false
+var bool qualifiedClickUsed = false
+var bool dayClickUsed = false
+var box rawBox = na
+var line rawMid = na
+
+if newDay
+    compressionCount := 0
+    boxActive := false
+    activeTop := na
+    activeBot := na
+    activeStart := na
+    lastRawBreakBar := na
+    lastBreakBar := na
+    lastBreakDir := 0
+    lastTop := na
+    lastBot := na
+    qualifiedBreakActive := false
+    qualifiedClickUsed := false
+    dayClickUsed := false
+    rawBox := na
+    rawMid := na
+
+compressionCount := compressedNow ? compressionCount + 1 : 0
+cooldownOk = na(lastRawBreakBar) or bar_index - lastRawBreakBar > overlapCooldownBars
+newBoxAllowed = compressionCount >= minCompressionBars and not boxActive and cooldownOk
+if newBoxAllowed
+    boxActive := true
+    activeTop := rangeHi
+    activeBot := rangeLo
+    activeStart := bar_index
+    if showAllResearchBoxes
+        rawBox := box.new(activeStart, activeTop, bar_index, activeBot, xloc=xloc.bar_index, bgcolor=color.new(color.gray, 90), border_color=color.new(color.gray, 30), border_width=1)
+        rawMid := line.new(activeStart, (activeTop + activeBot) / 2.0, bar_index, (activeTop + activeBot) / 2.0, xloc=xloc.bar_index, color=color.new(color.gray, 60), style=line.style_dashed)
+
+bool rawBreakLong = false
+bool rawBreakShort = false
+bool qualifiedBreakLong = false
+bool qualifiedBreakShort = false
+if boxActive
+    if showAllResearchBoxes and not na(rawBox)
+        box.set_right(rawBox, bar_index)
+        line.set_x2(rawMid, bar_index)
+    rawBreakLong := close > activeTop + breakBufferPts
+    rawBreakShort := close < activeBot - breakBufferPts
+    if rawBreakLong or rawBreakShort
+        lastRawBreakBar := bar_index
+        int thisDir = rawBreakLong ? 1 : -1
+        bool biasMatch = (thisDir == 1 and bias == "LONG") or (thisDir == -1 and bias == "SHORT")
+        bool firstClickOk = not oneClickPerDay or not dayClickUsed
+        bool gateAtBreak = contextArmed and familyOk and inExecutionWindow and zonePermission and biasMatch and firstClickOk and isFiveSecond
+        qualifiedBreakLong := gateAtBreak and thisDir == 1
+        qualifiedBreakShort := gateAtBreak and thisDir == -1
+        if gateAtBreak
+            lastBreakBar := bar_index
+            lastBreakDir := thisDir
+            lastTop := activeTop
+            lastBot := activeBot
+            qualifiedBreakActive := true
+            qualifiedClickUsed := false
+            if showAllResearchBoxes and not na(rawBox)
+                box.set_border_color(rawBox, thisDir == 1 ? color.lime : color.red)
+                box.set_bgcolor(rawBox, color.new(thisDir == 1 ? color.lime : color.red, 90))
+                line.set_color(rawMid, color.new(thisDir == 1 ? color.lime : color.red, 45))
+            else
+                box.new(activeStart, activeTop, bar_index, activeBot, xloc=xloc.bar_index, bgcolor=color.new(thisDir == 1 ? color.lime : color.red, 90), border_color=thisDir == 1 ? color.lime : color.red, border_width=2)
+        else if showAllResearchBoxes and not na(rawBox)
+            box.set_border_color(rawBox, color.new(color.gray, 70))
+        boxActive := false
+        compressionCount := 0
+        rawBox := na
+        rawMid := na
+
+freshQualifiedBreak = qualifiedBreakActive and not na(lastBreakBar) and bar_index > lastBreakBar and bar_index - lastBreakBar <= retestMaxBars
+longPrimaryClick = freshQualifiedBreak and lastBreakDir == 1 and not qualifiedClickUsed and low <= lastTop and close >= lastTop - holdTolerancePts
+shortPrimaryClick = freshQualifiedBreak and lastBreakDir == -1 and not qualifiedClickUsed and high >= lastBot and close <= lastBot + holdTolerancePts
+primaryClick = longPrimaryClick or shortPrimaryClick
+if primaryClick
+    qualifiedClickUsed := true
+    qualifiedBreakActive := false
+    dayClickUsed := true
+if qualifiedBreakActive and not na(lastBreakBar) and bar_index - lastBreakBar > retestMaxBars
+    qualifiedBreakActive := false
+
+plotshape(showQualifiedBreak and qualifiedBreakLong, title="Qualified Box Break Long", style=shape.triangleup, location=location.belowbar, color=color.lime, size=size.small, text="QUAL\nBOX", textcolor=color.black)
+plotshape(showQualifiedBreak and qualifiedBreakShort, title="Qualified Box Break Short", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="QUAL\nBOX", textcolor=color.white)
+plotshape(showPrimaryClick and longPrimaryClick, title="Filtered Primary Click Long", style=shape.labelup, location=location.belowbar, color=color.lime, size=size.normal, text="PRIMARY\nCLICK", textcolor=color.black)
+plotshape(showPrimaryClick and shortPrimaryClick, title="Filtered Primary Click Short", style=shape.labeldown, location=location.abovebar, color=color.red, size=size.normal, text="PRIMARY\nCLICK", textcolor=color.white)
+
+bgcolor(not isFiveSecond ? color.new(color.orange, 88) : na, title="Wrong timeframe warning")
+
+var table gate = table.new(position.top_right, 2, 7, border_width=1)
+if barstate.islast and showGatePanel
+    table.cell(gate, 0, 0, "FILTERED BOX", bgcolor=color.new(color.blue, 65), text_color=color.white)
+    table.cell(gate, 1, 0, "PRIMARY CLICK", bgcolor=color.new(color.blue, 65), text_color=color.white)
+    table.cell(gate, 0, 1, "Armed")
+    table.cell(gate, 1, 1, contextArmed ? "YES" : "NO", bgcolor=contextArmed ? color.new(color.green, 65) : color.new(color.red, 55))
+    table.cell(gate, 0, 2, "Family")
+    table.cell(gate, 1, 2, schematic, bgcolor=familyOk ? color.new(color.green, 65) : color.new(color.red, 55))
+    table.cell(gate, 0, 3, "Bias")
+    table.cell(gate, 1, 3, bias)
+    table.cell(gate, 0, 4, "Exec time")
+    table.cell(gate, 1, 4, inExecutionWindow ? "YES" : "NO", bgcolor=inExecutionWindow ? color.new(color.green, 65) : color.new(color.red, 55))
+    table.cell(gate, 0, 5, "Zone")
+    table.cell(gate, 1, 5, zonePermission ? "YES" : "NO", bgcolor=zonePermission ? color.new(color.green, 65) : color.new(color.red, 55))
+    table.cell(gate, 0, 6, "Day click")
+    table.cell(gate, 1, 6, dayClickUsed ? "USED" : "READY")
+
+alertcondition(qualifiedBreakLong, "Qualified Box Break Long", "A1/A2/B LONG context + time + zone: qualified box break")
+alertcondition(qualifiedBreakShort, "Qualified Box Break Short", "A1/A2/B SHORT context + time + zone: qualified box break")
+alertcondition(longPrimaryClick, "Filtered Primary Click Long", "Filtered LONG primary click — tested TP15/SL10 click model, not runner-of-day")
+alertcondition(shortPrimaryClick, "Filtered Primary Click Short", "Filtered SHORT primary click — tested TP15/SL10 click model, not runner-of-day")
