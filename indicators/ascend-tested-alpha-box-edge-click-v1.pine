@@ -25,7 +25,7 @@ breakBufferPts = input.float(1.0, "Break close buffer points", minval=0.0, step=
 overlapCooldownBars = input.int(18, "Bars after break before a new box", minval=0, maxval=300, group=gBox)
 
 gClick = "Edge hold click"
-retestMaxBars = input.int(36, "Retest valid bars after break", minval=1, maxval=240, group=gClick)
+retestMaxBars = input.int(24, "Retest valid bars after break", minval=1, maxval=240, group=gClick)
 holdTolerancePts = input.float(1.0, "Edge hold tolerance points", minval=0.0, step=0.25, group=gClick)
 showBreaks = input.bool(true, "Show box-break markers", group=gClick)
 showClicks = input.bool(true, "Show EDGE HOLD click markers", group=gClick)
@@ -104,8 +104,8 @@ if boxActive and not na(activeBox)
         activeMid := na
 
 freshBreak = not na(lastBreakBar) and bar_index > lastBreakBar and bar_index - lastBreakBar <= retestMaxBars
-longEdgeHold = freshBreak and lastBreakDir == 1 and not edgeClickUsed and low <= lastTop + holdTolerancePts and close >= lastTop - holdTolerancePts
-shortEdgeHold = freshBreak and lastBreakDir == -1 and not edgeClickUsed and high >= lastBot - holdTolerancePts and close <= lastBot + holdTolerancePts
+longEdgeHold = freshBreak and lastBreakDir == 1 and not edgeClickUsed and low <= lastTop and close >= lastTop - holdTolerancePts
+shortEdgeHold = freshBreak and lastBreakDir == -1 and not edgeClickUsed and high >= lastBot and close <= lastBot + holdTolerancePts
 edgeClick = longEdgeHold or shortEdgeHold
 if edgeClick
     edgeClickUsed := true
