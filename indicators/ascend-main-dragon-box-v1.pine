@@ -68,6 +68,7 @@ mainShortColor = input.color(color.rgb(255, 72, 98), "Bearish main box", group=g
 mainFillOpacity = input.int(84, "Box fill opacity", minval=0, maxval=100, group=gMain)
 showMainEq = input.bool(true, "Show main-box equilibrium", group=gMain)
 extendMainThroughWindow = input.bool(false, "Extend selected box through session", group=gMain, tooltip="Off by default: the box stops when the selector confirms it. Turn on only if you want the price zone projected through the rest of the morning.")
+allowPremarketOrigin = input.bool(false, "Allow pre-market box origin", group=gMain, tooltip="Off by default: pre-market candidate state is cleared at 06:30 PT and the visible Main Dragon box cannot begin before the cash-session window.")
 
 gFilter = "Ascend Anti-clutter"
 maxMarksPerDay = input.int(12, "Max Ascend marks/day", minval=1, maxval=80, group=gFilter)
@@ -104,6 +105,11 @@ primaryImpulsePts = input.float(12.0, "Primary: local impulse", minval=0, step=1
 maxAdverseWickPts = input.float(10.0, "Primary: max adverse wick", minval=0, step=1, group=gQual)
 requireBodyWithSide = input.bool(false, "Primary: require body with direction", group=gQual)
 
+strictEntryWindow = not na(time(timeframe.period, entryWindow, tz))
+sessionFirstBar = strictEntryWindow and not strictEntryWindow[1]
+var int sessionStartBar = na
+if sessionFirstBar
+    sessionStartBar := bar_index
 
 len_ = int(len/2)
 pivh = ta.pivothigh(len_, len_)
@@ -155,6 +161,22 @@ var line pd_eq_line = na
 var line pd_prem_line = na
 var line pd_disc_line = na
 
+// RTH-only default: preserve indicator warm-up, but discard pre-market containers/state.
+if sessionFirstBar and not allowPremarketOrigin
+    while boxes.size() > 0
+        box.delete(boxes.pop())
+    while boxes_u.size() > 0
+        box.delete(boxes_u.pop())
+    while boxes_l.size() > 0
+        box.delete(boxes_l.pop())
+    while centerLines.size() > 0
+        line.delete(centerLines.pop())
+    aa_last_break_dir := 0
+    aa_last_break_bar := na
+    aa_last_box_top := na
+    aa_last_box_bot := na
+    aa_last_box_start := na
+
 // ============================================================================
 // LOGIC
 // ============================================================================
@@ -175,7 +197,7 @@ if boxes.size() > 0
 
 ada = 0
 
-if ta.crossunder(v1, v2)
+if (allowPremarketOrigin or strictEntryWindow) and ta.crossunder(v1, v2)
     float h = na
     float l = na
     int start_idx = na
@@ -209,14 +231,15 @@ if ta.crossunder(v1, v2)
     if (not na(h)) and (not na(l)) and (close <= h and close >= l) and (overlap or start_idx > wede)
         // Create Channel
         // Candidate boxes are internal. Only the selected Main Dragon box is visible.
-        boxes.unshift(box.new(start_idx, h, bar_index, l, bgcolor = color.new(chart.fg_color, 100), border_color = na))
+        int boxStartIdx = not allowPremarketOrigin and not na(sessionStartBar) ? math.max(start_idx, sessionStartBar) : start_idx
+        boxes.unshift(box.new(boxStartIdx, h, bar_index, l, bgcolor = color.new(chart.fg_color, 100), border_color = na))
         
-        boxes_u.unshift(box.new(start_idx, h, bar_index, h - 
+        boxes_u.unshift(box.new(boxStartIdx, h, bar_index, h - 
         vola, bgcolor = color.new(red, 100), border_color = na))
-        boxes_l.unshift(box.new(start_idx, l + vola, bar_index, l, bgcolor = color.new(green, 100), border_color = na))
+        boxes_l.unshift(box.new(boxStartIdx, l + vola, bar_index, l, bgcolor = color.new(green, 100), border_color = na))
         
         float centerY = (h + l) / 2
-        centerLines.unshift(line.new(start_idx, centerY, bar_index, centerY, color = color.new(chart.fg_color, 100), width = 1, style = line.style_dashed))
+        centerLines.unshift(line.new(boxStartIdx, centerY, bar_index, centerY, color = color.new(chart.fg_color, 100), width = 1, style = line.style_dashed))
 
 upbreak = 0.0
 downbreak = 0.0
@@ -395,7 +418,7 @@ plotshape(showRawBreakMarkers and downbreak != 0 ? downbreak : na, "Raw Bearish 
 // ASCEND / DRAGON ENTRY SYSTEM
 // ============================================================================
 // AlgoAlpha box break is context. C/D/X/E markers below are the actual Ascend entries.
-inWindow = not na(time(timeframe.period, entryWindow, tz)) or allowOutside
+inWindow = strictEntryWindow or allowOutside
 newDay = ta.change(time("D")) != 0
 minsFromOpen = (hour(time, tz) * 60 + minute(time, tz)) - (6 * 60 + 30)
 tick = syminfo.mintick
@@ -828,7 +851,8 @@ if inWindow and freshFlip and switchDir != 0
 if mainTrigger and not mainSelected
     selectedTop = ctxBoxTop
     selectedBot = ctxBoxBot
-    selectedLeft = not na(aa_last_box_start) ? aa_last_box_start : (boxes.size() > 0 ? boxes.first().get_left() : bar_index)
+    selectedLeftRaw = not na(aa_last_box_start) ? aa_last_box_start : (boxes.size() > 0 ? boxes.first().get_left() : bar_index)
+    selectedLeft = not allowPremarketOrigin and not na(sessionStartBar) ? math.max(selectedLeftRaw, sessionStartBar) : selectedLeftRaw
     if not na(selectedTop) and not na(selectedBot) and selectedTop > selectedBot
         [newMainBox, newMainEq, newMainLabel] = makeMainBox(mainFam, mainSide, selectedLeft, selectedTop, selectedBot)
         mainBox := newMainBox
