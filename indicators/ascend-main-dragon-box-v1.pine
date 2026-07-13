@@ -67,7 +67,7 @@ mainLongColor = input.color(color.rgb(0, 220, 170), "Bullish main box", group=gM
 mainShortColor = input.color(color.rgb(255, 72, 98), "Bearish main box", group=gMain)
 mainFillOpacity = input.int(84, "Box fill opacity", minval=0, maxval=100, group=gMain)
 showMainEq = input.bool(true, "Show main-box equilibrium", group=gMain)
-extendMainThroughWindow = input.bool(true, "Extend selected box through session", group=gMain)
+extendMainThroughWindow = input.bool(false, "Extend selected box through session", group=gMain, tooltip="Off by default: the box stops when the selector confirms it. Turn on only if you want the price zone projected through the rest of the morning.")
 
 gFilter = "Ascend Anti-clutter"
 maxMarksPerDay = input.int(12, "Max Ascend marks/day", minval=1, maxval=80, group=gFilter)
