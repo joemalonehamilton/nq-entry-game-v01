@@ -1,0 +1,845 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlgoAlpha
+
+//@version=6
+indicator("Ascend Main Dragon Box v1", "Main Dragon Box", overlay = true, behind_chart = false, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 5000)
+// One clean output: the first exact AlgoAlpha box each day that receives the original
+// broad C/D/X/E Rocket/Dragon confirmation. This is the high-coverage box selector; the
+// later no-chase/PRIMARY filters remain optional entry filters, not box-selection gates.
+// No RSI, EMA momentum overlay, raw box-break markers, or repeated entry arrows.
+
+len = input.int(99, "Range Detection Period", group = "Main Settings", tooltip = "The period used to calculate the range for breakout detection.")
+overlap = not input.bool(true, "Prevent Overlap", group = "Main Settings", tooltip = "If enabled, prevents new boxes from overlapping with existing ones.")
+
+// Target Settings
+shw_TP1 = input.bool(false, title="Show AlgoAlpha Breakout TP UI", group="Targets", tooltip = "Optional raw breakout TP UI. Ascend/Dragon C/D/X/E entries are separate and are the actual trade markers.")
+atr_period = input.int(14, title="Volatility (ATR) period", minval=1, group="Targets", tooltip = "Period for Average True Range (ATR) calculation used for volatility.")
+sl_multiplier = input.float(5, title="Stop Loss ATR Multiplier", minval=0.1, step=0.1, group="Targets", tooltip = "Multiplier for ATR to calculate Stop Loss distance.")
+tp1_multiplier = input.float(0.5, title="TP1 Multiplier", minval=0.1, step=0.1, group="Targets", tooltip = "Multiplier for risk distance to calculate Take Profit 1.")
+tp2_multiplier = input.float(1.0, title="TP2 Multiplier", minval=0.1, step=0.1, group="Targets", tooltip = "Multiplier for risk distance to calculate Take Profit 2.")
+tp3_multiplier = input.float(1.5, title="TP3 Multiplier", minval=0.1, step=0.1, group="Targets", tooltip = "Multiplier for risk distance to calculate Take Profit 3.")
+
+green = input.color(#00ffbb, title = "Bullish Colour", group = "Appearance", tooltip = "Color used for bullish visuals and positive sentiment texts.")
+red   = input.color(#ff1100, title = "Bearish Colour", group = "Appearance", tooltip = "Color used for bearish visuals and negative sentiment texts.")
+
+// ============================================================================
+// ASCEND / DRAGON ENTRY OVERLAY SETTINGS
+// ============================================================================
+gTime = "Ascend Window"
+tz = input.string("America/Los_Angeles", "Timezone", group=gTime)
+entryWindow = input.session("0630-0815", "Entry window", group=gTime)
+allowOutside = input.bool(false, "Allow outside window", group=gTime)
+
+gAsc = "Ascend Entries"
+showAscendEntries = input.bool(true, "Enable original Rocket/Dragon selector", group=gAsc)
+showEntryMarkers = input.bool(false, "Debug: show C/D/X/E markers", group=gAsc)
+mode = input.string("Beta Study", "Mode", options=["Beta Study", "Alpha Strict"], group=gAsc, tooltip="Beta = more study markers. Alpha Strict = primary C/D only + no-chase box location.")
+showRawBreakMarkers = input.bool(false, "Debug: show raw box breaks", group=gAsc)
+showContext = input.bool(false, "Show A/B/D context flip dots", group=gAsc)
+showLower = input.bool(false, "Show lower-confidence entries", group=gAsc)
+showText = input.bool(false, "Debug: text on entry markers", group=gAsc)
+requireAlgoBoxContext = input.bool(true, "Require active/recent AlgoAlpha box", group=gAsc)
+boxContextBars = input.int(24, "Recent box break valid bars", minval=1, maxval=240, group=gAsc)
+requireBoxEdgeTouch = input.bool(false, "Require box edge touch / retest", group=gAsc, tooltip="Optional stricter visual cleanup. Backtest says this is weaker than no-chase PD by itself and can over-filter when combined with no-chase. Use only if the chart is too cluttered.")
+boxEdgeBufferPts = input.float(8.0, "Box edge buffer pts", minval=0.0, step=0.25, group=gAsc)
+requireNoChasePD = input.bool(true, "Filter C/D/X/E with no-chase PD", group=gAsc, tooltip="Best tested default: longs cannot trigger from upper chase area of the box; shorts cannot trigger from lower chase area. This beat edge-touch gating on 117 true 5s days.")
+allowXInBeta = input.bool(true, "Beta: allow X Dragon continuation", group=gAsc)
+allowEInBeta = input.bool(true, "Beta: allow E post-flip continuation", group=gAsc)
+
+// PD Array = the best thing the rerun found: entries should come from useful location inside/around the AlgoAlpha box, not raw breakout chase.
+gPD = "PD Array Entries"
+showPDArray = input.bool(false, "Debug: show PD-array entries", group=gPD, tooltip="Off by default; the main-box selector still uses no-chase premium/discount internally.")
+showPDLevels = input.bool(false, "Debug: show last box EQ / premium / discount levels", group=gPD)
+pdWindowBars = input.int(72, "PD entry valid bars after box break", minval=6, maxval=300, group=gPD)
+pdBreakLookback = input.int(6, "PD trigger micro-break lookback", minval=2, maxval=30, group=gPD)
+pdRequireReclaim = input.bool(true, "PD trigger requires reclaim/reject", group=gPD)
+pdRequirePrimary = input.bool(false, "PD trigger requires primary candle quality", group=gPD)
+pdAllowInsideActiveBox = input.bool(true, "PD entries can fire inside active box", group=gPD)
+pdMaxPerBoxSide = input.int(2, "Max PD entries per side after same box", minval=1, maxval=5, group=gPD)
+labelOffsetTicks = input.int(3, "Marker offset ticks", minval=0, maxval=20, group=gAsc)
+longColor = input.color(color.lime, "Long entry", group=gAsc)
+shortColor = input.color(color.red, "Short entry", group=gAsc)
+lowerColor = input.color(color.orange, "Lower confidence", group=gAsc)
+contextColor = input.color(color.gray, "Context", group=gAsc)
+
+gMain = "Main Dragon Box"
+mainLongColor = input.color(color.rgb(0, 220, 170), "Bullish main box", group=gMain)
+mainShortColor = input.color(color.rgb(255, 72, 98), "Bearish main box", group=gMain)
+mainFillOpacity = input.int(84, "Box fill opacity", minval=0, maxval=100, group=gMain)
+showMainEq = input.bool(true, "Show main-box equilibrium", group=gMain)
+extendMainThroughWindow = input.bool(true, "Extend selected box through session", group=gMain)
+
+gFilter = "Ascend Anti-clutter"
+maxMarksPerDay = input.int(12, "Max Ascend marks/day", minval=1, maxval=80, group=gFilter)
+minBarsBetweenSameSide = input.int(72, "Min bars between same-side marks", minval=0, maxval=300, group=gFilter)
+minBarsBetweenAny = input.int(24, "Min bars between any marks", minval=0, maxval=120, group=gFilter)
+
+gLogic = "Ascend Logic"
+rangeMinutes = input.int(5, "Opening range minutes", minval=2, maxval=15, group=gLogic)
+pulseMinutes = input.int(2, "Pulse read minutes", minval=1, maxval=5, group=gLogic)
+mssLookback = input.int(10, "MSS lookback bars", minval=3, maxval=60, group=gLogic)
+entryBufferPts = input.float(0.25, "Entry break buffer pts", minval=0, step=0.25, group=gLogic)
+ifvgMaxRetestBars = input.int(14, "IFVG retest max bars", minval=1, maxval=60, group=gLogic)
+
+gDragon = "Ascend Dragon continuation"
+impulseLookback = input.int(72, "Impulse lookback bars", minval=12, maxval=300, group=gDragon)
+minImpulsePts = input.float(70.0, "Min trend impulse pts", minval=20, step=5, group=gDragon)
+pullbackMinPts = input.float(10.0, "Pullback min pts", minval=2, step=1, group=gDragon)
+pullbackMaxPts = input.float(55.0, "Pullback max pts", minval=10, step=5, group=gDragon)
+baseBars = input.int(8, "Base/pause bars", minval=3, maxval=30, group=gDragon)
+baseMaxRangePts = input.float(35.0, "Base max range pts", minval=5, step=5, group=gDragon)
+reentryAfterExtremePts = input.float(45.0, "Reset continuation after new extreme pts", minval=10, step=5, group=gDragon)
+
+gFlip = "Ascend Direction flips"
+flipAfterMovePts = input.float(110.0, "Allow opposite flip after move pts", minval=30, step=10, group=gFlip)
+flipBreakLookback = input.int(12, "Flip break lookback bars", minval=3, maxval=60, group=gFlip)
+flipRetestMaxBars = input.int(36, "Flip remains fresh bars", minval=6, maxval=180, group=gFlip)
+flipMinMinute = input.int(40, "Do not flip before minute", minval=0, maxval=120, group=gFlip)
+flipLegMovePts = input.float(35.0, "Min move off leg extreme for flip", minval=10, step=5, group=gFlip)
+flipRecentExtremeBars = input.int(24, "Flip needs recent sweep/extreme bars", minval=3, maxval=120, group=gFlip)
+flipCooldownBars = input.int(24, "Min bars between opposite flips", minval=0, maxval=120, group=gFlip)
+
+gQual = "Ascend Quality"
+primaryImpulsePts = input.float(12.0, "Primary: local impulse", minval=0, step=1, group=gQual)
+maxAdverseWickPts = input.float(10.0, "Primary: max adverse wick", minval=0, step=1, group=gQual)
+requireBodyWithSide = input.bool(false, "Primary: require body with direction", group=gQual)
+
+
+len_ = int(len/2)
+pivh = ta.pivothigh(len_, len_)
+pivl = ta.pivotlow(len_, len_)
+
+v1 = ta.wma(math.abs(close-open), len)
+v2 = ta.ema(math.abs(close-open), len)
+
+// ============================================================================
+// VARIABLES & ARRAYS
+// ============================================================================
+
+var boxes       = array.new_box()
+var boxes_u     = array.new_box()
+var boxes_l     = array.new_box()
+var centerLines = array.new_line()
+
+volatility = ta.atr(atr_period)
+
+var line entry_line = na
+var line sl_line = na
+var line tp1_line = na
+var line tp2_line = na
+var line tp3_line = na 
+var label entry_label = na
+var label sl_label = na
+var label tp1_label = na
+var label tp2_label = na
+var label tp3_label = na
+var linefill lf1 = na
+var linefill lf2 = na
+var int trade_dir = 0
+var bool tp3_hit = false
+
+// Ascend uses AlgoAlpha boxes as context only. These track active/recent boxes; they do not create boxes.
+var int aa_last_break_dir = 0
+var int aa_last_break_bar = na
+var float aa_last_box_top = na
+var float aa_last_box_bot = na
+var int aa_last_box_start = na
+var bool mainSelected = false
+var box mainBox = na
+var line mainEqLine = na
+var label mainBoxLabel = na
+var int aa_last_box_id = 0
+var int pd_long_marks_for_box = 0
+var int pd_short_marks_for_box = 0
+var line pd_eq_line = na
+var line pd_prem_line = na
+var line pd_disc_line = na
+
+// ============================================================================
+// LOGIC
+// ============================================================================
+
+// Get most recent pivots (occurrence 0)
+pivh_lvl_0 = ta.valuewhen(not na(pivh), high[len_], 0)
+pivh_index_0 = ta.valuewhen(not na(pivh), bar_index[len_], 0)
+
+pivl_lvl_0 = ta.valuewhen(not na(pivl), low[len_], 0)
+pivl_index_0 = ta.valuewhen(not na(pivl), bar_index[len_], 0)
+
+vola = ta.atr(len)/2
+
+var wede = 0
+
+if boxes.size() > 0
+    wede := boxes.first().get_right()
+
+ada = 0
+
+if ta.crossunder(v1, v2)
+    float h = na
+    float l = na
+    int start_idx = na
+    
+    // Determine closest pivot
+    if pivh_index_0 > pivl_index_0
+        // High is closer
+        h := pivh_lvl_0
+        start_idx := pivh_index_0
+        // Find lowest low since the pivot high
+        // Length must be at least 1
+        int dist = bar_index - start_idx
+        if dist > 0
+            float min_val = high
+            for i = 0 to dist - 1
+                min_val := math.min(min_val, low[i])
+            l := min_val
+    else
+        // Low is closer
+        l := pivl_lvl_0
+        start_idx := pivl_index_0
+        // Find highest high since the pivot low
+        int dist = bar_index - start_idx
+        if dist > 0
+            float max_val = low
+            for i = 0 to dist - 1
+                max_val := math.max(max_val, high[i])
+            h := max_val
+    ada := start_idx
+
+    if (not na(h)) and (not na(l)) and (close <= h and close >= l) and (overlap or start_idx > wede)
+        // Create Channel
+        // Candidate boxes are internal. Only the selected Main Dragon box is visible.
+        boxes.unshift(box.new(start_idx, h, bar_index, l, bgcolor = color.new(chart.fg_color, 100), border_color = na))
+        
+        boxes_u.unshift(box.new(start_idx, h, bar_index, h - 
+        vola, bgcolor = color.new(red, 100), border_color = na))
+        boxes_l.unshift(box.new(start_idx, l + vola, bar_index, l, bgcolor = color.new(green, 100), border_color = na))
+        
+        float centerY = (h + l) / 2
+        centerLines.unshift(line.new(start_idx, centerY, bar_index, centerY, color = color.new(chart.fg_color, 100), width = 1, style = line.style_dashed))
+
+upbreak = 0.0
+downbreak = 0.0
+bool new_breakout = false
+
+// Manage existing boxes
+if boxes.size() > 0
+    for i = boxes.size()-1 to 0
+        box b = boxes.get(i)
+        float top = b.get_top()
+        float bot = b.get_bottom()
+        
+        if close > top
+            // Bullish Breakout
+            upbreak := bot
+            aa_last_break_dir := 1
+            aa_last_break_bar := bar_index
+            aa_last_box_top := top
+            aa_last_box_bot := bot
+            aa_last_box_start := b.get_left()
+            aa_last_box_id += 1
+            pd_long_marks_for_box := 0
+            pd_short_marks_for_box := 0
+            line.delete(pd_eq_line)
+            line.delete(pd_prem_line)
+            line.delete(pd_disc_line)
+            if showPDLevels
+                float eq = (top + bot) / 2
+                float prem = bot + (top - bot) * 0.75
+                float disc = bot + (top - bot) * 0.25
+                pd_eq_line := line.new(bar_index, eq, bar_index + pdWindowBars, eq, xloc=xloc.bar_index, color=color.new(color.yellow, 35), style=line.style_dotted, width=1)
+                pd_prem_line := line.new(bar_index, prem, bar_index + pdWindowBars, prem, xloc=xloc.bar_index, color=color.new(red, 60), style=line.style_dotted, width=1)
+                pd_disc_line := line.new(bar_index, disc, bar_index + pdWindowBars, disc, xloc=xloc.bar_index, color=color.new(green, 60), style=line.style_dotted, width=1)
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            
+            if shw_TP1
+                new_breakout := true
+                trade_dir := 1
+                tp3_hit := false
+                float SL = low - volatility * sl_multiplier
+                float TP1_lvl = close + math.abs(close - SL) * tp1_multiplier
+                float TP2_lvl = close + math.abs(close - SL) * tp2_multiplier
+                float TP3_lvl = close + math.abs(close - SL) * tp3_multiplier
+                
+                line.delete(entry_line)
+                label.delete(entry_label)
+                line.delete(sl_line)
+                label.delete(sl_label)
+                line.delete(tp1_line)
+                label.delete(tp1_label)
+                line.delete(tp2_line)
+                label.delete(tp2_label)
+                line.delete(tp3_line)
+                label.delete(tp3_label)
+                
+                entry_line := line.new(bar_index, close, bar_index, close, color = green, width = 3)
+                entry_label := label.new(bar_index, close, text = "Box Break ▸ " + str.tostring(close, format.mintick), style = label.style_label_left, color = green, textcolor = color.white)
+
+                sl_line := line.new(bar_index, SL, bar_index, SL, color = color.new(red, 80), width = 3)
+                sl_label := label.new(bar_index, SL, text = "✘ SL ▸ " + str.tostring(SL, format.mintick), style = label.style_label_left, color = color.new(red, 80), textcolor = color.white)
+
+                tp1_line := line.new(bar_index, TP1_lvl, bar_index, TP1_lvl, color = color.new(green, 80), width = 3)
+                tp1_label := label.new(bar_index, TP1_lvl, text = " ✔ TP1 ▸ " + str.tostring(TP1_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+
+                tp2_line := line.new(bar_index, TP2_lvl, bar_index, TP2_lvl, color = color.new(green, 80), width = 3)
+                tp2_label := label.new(bar_index, TP2_lvl, text = " ✔ TP2 ▸ " + str.tostring(TP2_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+
+                tp3_line := line.new(bar_index, TP3_lvl, bar_index, TP3_lvl, color = color.new(green, 80), width = 3)
+                tp3_label := label.new(bar_index, TP3_lvl, text = " ✔ TP3 ▸ " + str.tostring(TP3_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+                
+                linefill.delete(lf1)
+                linefill.delete(lf2)
+                lf1 := linefill.new(entry_line, sl_line, color.new(red, 95))
+                lf2 := linefill.new(entry_line, tp3_line, color.new(green, 95))
+
+        else if close < bot
+            // Bearish Breakout
+            downbreak := top
+            aa_last_break_dir := -1
+            aa_last_break_bar := bar_index
+            aa_last_box_top := top
+            aa_last_box_bot := bot
+            aa_last_box_start := b.get_left()
+            aa_last_box_id += 1
+            pd_long_marks_for_box := 0
+            pd_short_marks_for_box := 0
+            line.delete(pd_eq_line)
+            line.delete(pd_prem_line)
+            line.delete(pd_disc_line)
+            if showPDLevels
+                float eq = (top + bot) / 2
+                float prem = bot + (top - bot) * 0.75
+                float disc = bot + (top - bot) * 0.25
+                pd_eq_line := line.new(bar_index, eq, bar_index + pdWindowBars, eq, xloc=xloc.bar_index, color=color.new(color.yellow, 35), style=line.style_dotted, width=1)
+                pd_prem_line := line.new(bar_index, prem, bar_index + pdWindowBars, prem, xloc=xloc.bar_index, color=color.new(red, 60), style=line.style_dotted, width=1)
+                pd_disc_line := line.new(bar_index, disc, bar_index + pdWindowBars, disc, xloc=xloc.bar_index, color=color.new(green, 60), style=line.style_dotted, width=1)
+            boxes.remove(i)
+            boxes_u.remove(i)
+            boxes_l.remove(i)
+            centerLines.remove(i)
+            
+            if shw_TP1
+                new_breakout := true
+                trade_dir := -1
+                tp3_hit := false
+                float SL = high + volatility * sl_multiplier
+                float TP1_lvl = close - math.abs(close - SL) * tp1_multiplier
+                float TP2_lvl = close - math.abs(close - SL) * tp2_multiplier
+                float TP3_lvl = close - math.abs(close - SL) * tp3_multiplier
+                
+                line.delete(entry_line)
+                label.delete(entry_label)
+                line.delete(sl_line)
+                label.delete(sl_label)
+                line.delete(tp1_line)
+                label.delete(tp1_label)
+                line.delete(tp2_line)
+                label.delete(tp2_label)
+                line.delete(tp3_line)
+                label.delete(tp3_label)
+                
+                entry_line := line.new(bar_index, close, bar_index, close, color = red, width = 3)
+                entry_label := label.new(bar_index, close, text = "Box Break ▸ " + str.tostring(close, format.mintick), style = label.style_label_left, color = red, textcolor = color.white)
+
+                sl_line := line.new(bar_index, SL, bar_index, SL, color = color.new(red, 80), width = 3)
+                sl_label := label.new(bar_index, SL, text = "✘ SL ▸ " + str.tostring(SL, format.mintick), style = label.style_label_left, color = color.new(red, 80), textcolor = color.white)
+
+                tp1_line := line.new(bar_index, TP1_lvl, bar_index, TP1_lvl, color = color.new(green, 80), width = 3)
+                tp1_label := label.new(bar_index, TP1_lvl, text = " ✔ TP1 ▸ " + str.tostring(TP1_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+
+                tp2_line := line.new(bar_index, TP2_lvl, bar_index, TP2_lvl, color = color.new(green, 80), width = 3)
+                tp2_label := label.new(bar_index, TP2_lvl, text = " ✔ TP2 ▸ " + str.tostring(TP2_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+
+                tp3_line := line.new(bar_index, TP3_lvl, bar_index, TP3_lvl, color = color.new(green, 80), width = 3)
+                tp3_label := label.new(bar_index, TP3_lvl, text = " ✔ TP3 ▸ " + str.tostring(TP3_lvl, format.mintick), style = label.style_label_left, color = color.new(green, 80), textcolor = color.white)
+                
+                linefill.delete(lf1)
+                linefill.delete(lf2)
+                lf1 := linefill.new(entry_line, sl_line, color.new(red, 95))
+                lf2 := linefill.new(entry_line, tp3_line, color.new(green, 95))
+
+        else
+            // Extend
+            b.set_right(bar_index)
+            boxes_u.get(i).set_right(bar_index)
+            boxes_l.get(i).set_right(bar_index)
+            centerLines.get(i).set_x2(bar_index)
+
+if not new_breakout and not tp3_hit
+    line.set_x2(entry_line, bar_index)
+    label.set_x(entry_label, bar_index)
+    line.set_x2(sl_line, bar_index)
+    label.set_x(sl_label, bar_index)
+    line.set_x2(tp1_line, bar_index)
+    label.set_x(tp1_label, bar_index)
+    line.set_x2(tp2_line, bar_index)
+    label.set_x(tp2_label, bar_index)
+    line.set_x2(tp3_line, bar_index)
+    label.set_x(tp3_label, bar_index)
+
+    float tp3_level = line.get_y1(tp3_line)
+    if not na(tp3_level)
+        if trade_dir == 1 and high >= tp3_level
+            tp3_hit := true
+        else if trade_dir == -1 and low <= tp3_level
+            tp3_hit := true
+
+plotshape(showRawBreakMarkers and upbreak != 0 ? upbreak : na, "Raw Bullish Box Break Context", shape.labelup, location.absolute, color.new(color.gray, 15), text = "BOX", textcolor = color.white, size=size.tiny)
+plotshape(showRawBreakMarkers and downbreak != 0 ? downbreak : na, "Raw Bearish Box Break Context", shape.labeldown, location.absolute, color.new(color.gray, 15), text = "BOX", textcolor = color.white, size=size.tiny)
+
+
+// ============================================================================
+// ASCEND / DRAGON ENTRY SYSTEM
+// ============================================================================
+// AlgoAlpha box break is context. C/D/X/E markers below are the actual Ascend entries.
+inWindow = not na(time(timeframe.period, entryWindow, tz)) or allowOutside
+newDay = ta.change(time("D")) != 0
+minsFromOpen = (hour(time, tz) * 60 + minute(time, tz)) - (6 * 60 + 30)
+tick = syminfo.mintick
+
+var float dayOpen = na
+var float openRangeHigh = na
+var float openRangeLow = na
+var float pulseClose = na
+var float dayHigh = na
+var float dayLow = na
+var int pulseDir = 0
+var int activeDir = 0
+var int marksToday = 0
+var int lastAnyMarkBar = na
+var int lastLongMarkBar = na
+var int lastShortMarkBar = na
+var bool aSeen = false
+var bool bSeen = false
+var int lastFlipBar = na
+var int switchDir = 0
+var float switchLevel = na
+var int switchBar = na
+var float lastContinuationExtreme = na
+var bool continuationUsed = false
+var float legHigh = na
+var float legLow = na
+var bool bullIfvgArmed = false
+var bool bearIfvgArmed = false
+var float bullIfvgMid = na
+var float bearIfvgMid = na
+var int bullIfvgBar = na
+var int bearIfvgBar = na
+
+if newDay
+    dayOpen := na
+    openRangeHigh := na
+    openRangeLow := na
+    pulseClose := na
+    dayHigh := na
+    dayLow := na
+    pulseDir := 0
+    activeDir := 0
+    marksToday := 0
+    lastAnyMarkBar := na
+    lastLongMarkBar := na
+    lastShortMarkBar := na
+    aSeen := false
+    bSeen := false
+    lastFlipBar := na
+    switchDir := 0
+    switchLevel := na
+    switchBar := na
+    lastContinuationExtreme := na
+    continuationUsed := false
+    legHigh := na
+    legLow := na
+    bullIfvgArmed := false
+    bearIfvgArmed := false
+    bullIfvgMid := na
+    bearIfvgMid := na
+    bullIfvgBar := na
+    bearIfvgBar := na
+    aa_last_break_dir := 0
+    aa_last_break_bar := na
+    aa_last_box_top := na
+    aa_last_box_bot := na
+    aa_last_box_start := na
+    mainSelected := false
+    mainBox := na
+    mainEqLine := na
+    mainBoxLabel := na
+    pd_long_marks_for_box := 0
+    pd_short_marks_for_box := 0
+    line.delete(pd_eq_line)
+    line.delete(pd_prem_line)
+    line.delete(pd_disc_line)
+
+if inWindow and minsFromOpen >= 0 and na(dayOpen)
+    dayOpen := open
+    openRangeHigh := high
+    openRangeLow := low
+    pulseClose := close
+    dayHigh := high
+    dayLow := low
+
+if inWindow and minsFromOpen >= 0
+    dayHigh := na(dayHigh) ? high : math.max(dayHigh, high)
+    dayLow := na(dayLow) ? low : math.min(dayLow, low)
+
+if inWindow and minsFromOpen >= 0 and minsFromOpen < rangeMinutes
+    openRangeHigh := na(openRangeHigh) ? high : math.max(openRangeHigh, high)
+    openRangeLow := na(openRangeLow) ? low : math.min(openRangeLow, low)
+
+if inWindow and minsFromOpen >= 0 and minsFromOpen < pulseMinutes
+    pulseClose := close
+
+if inWindow and minsFromOpen >= pulseMinutes and pulseDir == 0 and not na(dayOpen) and not na(pulseClose)
+    pulseDir := pulseClose >= dayOpen ? 1 : -1
+    activeDir := pulseDir
+    lastContinuationExtreme := pulseDir == 1 ? high : low
+    legHigh := high
+    legLow := low
+
+prevHigh = ta.highest(high, mssLookback)[1]
+prevLow = ta.lowest(low, mssLookback)[1]
+flipPrevHigh = ta.highest(high, flipBreakLookback)[1]
+flipPrevLow = ta.lowest(low, flipBreakLookback)[1]
+impulseHigh = ta.highest(high, impulseLookback)
+impulseLow = ta.lowest(low, impulseLookback)
+baseHigh = ta.highest(high, baseBars)[1]
+baseLow = ta.lowest(low, baseBars)[1]
+baseRange = baseHigh - baseLow
+
+if inWindow and activeDir != 0
+    legHigh := na(legHigh) ? high : math.max(legHigh, high)
+    legLow := na(legLow) ? low : math.min(legLow, low)
+
+recentLowExtreme = math.abs(ta.lowestbars(low, flipRecentExtremeBars * 2)) <= flipRecentExtremeBars
+recentHighExtreme = math.abs(ta.highestbars(high, flipRecentExtremeBars * 2)) <= flipRecentExtremeBars
+flipCooldownOk = na(lastFlipBar) or bar_index - lastFlipBar >= flipCooldownBars
+
+bodyOk(side) => not requireBodyWithSide or (side == 1 ? close >= open : close <= open)
+localImpulse(side) => side == 1 ? close - ta.lowest(low, mssLookback) : ta.highest(high, mssLookback) - close
+localAdverse(side) => side == 1 ? close - low : high - close
+primaryOk(side) => bodyOk(side) and localImpulse(side) >= primaryImpulsePts and localAdverse(side) <= maxAdverseWickPts
+canMark(side) => showAscendEntries and inWindow and marksToday < maxMarksPerDay and (na(lastAnyMarkBar) or bar_index - lastAnyMarkBar >= minBarsBetweenAny) and (side == 1 ? (na(lastLongMarkBar) or bar_index - lastLongMarkBar >= minBarsBetweenSameSide) : (na(lastShortMarkBar) or bar_index - lastShortMarkBar >= minBarsBetweenSameSide))
+markerY(side) => side == 1 ? low - labelOffsetTicks * tick : high + labelOffsetTicks * tick
+markerStyle(side) => side == 1 ? label.style_triangleup : label.style_triangledown
+markerTxt(fam, tier) => showText ? fam + (tier == "P" ? "" : "·") : ""
+isAlpha = mode == "Alpha Strict"
+activeBoxTop = boxes.size() > 0 ? boxes.first().get_top() : na
+activeBoxBot = boxes.size() > 0 ? boxes.first().get_bottom() : na
+ctxBoxTop = not na(aa_last_box_top) ? aa_last_box_top : activeBoxTop
+ctxBoxBot = not na(aa_last_box_bot) ? aa_last_box_bot : activeBoxBot
+recentBreakOk(side) => aa_last_break_dir == side and not na(aa_last_break_bar) and bar_index - aa_last_break_bar <= boxContextBars
+insideAnyActiveBox() => boxes.size() > 0 and close <= boxes.first().get_top() and close >= boxes.first().get_bottom()
+activeBoxEdgeOk(side) => boxes.size() > 0 and (side == 1 ? low <= boxes.first().get_bottom() + boxEdgeBufferPts : high >= boxes.first().get_top() - boxEdgeBufferPts)
+brokenBoxRetestOk(side) => not na(ctxBoxTop) and not na(ctxBoxBot) and (side == 1 ? low <= ctxBoxTop + boxEdgeBufferPts : high >= ctxBoxBot - boxEdgeBufferPts)
+boxContextOk(side) => not requireAlgoBoxContext or recentBreakOk(side) or insideAnyActiveBox()
+boxEdgeOk(side) => not requireBoxEdgeTouch or activeBoxEdgeOk(side) or (recentBreakOk(side) and brokenBoxRetestOk(side))
+noChasePDOk(side) => not requireNoChasePD or na(ctxBoxTop) or na(ctxBoxBot) or ctxBoxTop <= ctxBoxBot ? true : (side == 1 ? close <= ctxBoxBot + (ctxBoxTop - ctxBoxBot) * 0.75 : close >= ctxBoxBot + (ctxBoxTop - ctxBoxBot) * 0.25)
+familyAllowed(fam, tier) => not isAlpha ? ((fam == "X" ? allowXInBeta : true) and (fam == "E" ? allowEInBeta : true)) : ((fam == "C" or fam == "D") and tier == "P")
+entryOk(fam, side, tier) => boxContextOk(side) and boxEdgeOk(side) and noChasePDOk(side) and familyAllowed(fam, tier)
+
+makeMainBox(fam, side, left, top, bot) =>
+    col = side == 1 ? mainLongColor : mainShortColor
+    b = box.new(left, top, bar_index, bot, xloc=xloc.bar_index, bgcolor=color.new(col, mainFillOpacity), border_color=col, border_width=2)
+    eq = line.new(left, (top + bot) / 2.0, bar_index, (top + bot) / 2.0, xloc=xloc.bar_index, color=showMainEq ? color.new(col, 20) : color.new(col, 100), style=line.style_dashed, width=1)
+    lab = label.new(bar_index, top, "MAIN " + fam + " DRAGON", xloc=xloc.bar_index, yloc=yloc.price, style=side == 1 ? label.style_label_down : label.style_label_up, color=col, textcolor=color.white, size=size.small)
+    [b, eq, lab]
+
+markAsc(fam, side, tier) =>
+    if showEntryMarkers
+        col = tier == "CTX" ? contextColor : tier == "P" ? (side == 1 ? longColor : shortColor) : lowerColor
+        label.new(bar_index, markerY(side), markerTxt(fam, tier), xloc=xloc.bar_index, yloc=yloc.price, style=markerStyle(side), color=col, textcolor=color.white, size=size.tiny)
+
+markPD(side) =>
+    txt = showText ? (side == 1 ? "PD" : "PD") : ""
+    col = side == 1 ? color.new(color.aqua, 0) : color.new(color.fuchsia, 0)
+    label.new(bar_index, markerY(side), txt, xloc=xloc.bar_index, yloc=yloc.price, style=markerStyle(side), color=col, textcolor=color.white, size=size.tiny)
+
+boxHeight = (not na(ctxBoxTop) and not na(ctxBoxBot)) ? ctxBoxTop - ctxBoxBot : na
+pdEq = not na(boxHeight) ? ctxBoxBot + boxHeight * 0.50 : na
+pdPrem = not na(boxHeight) ? ctxBoxBot + boxHeight * 0.75 : na
+pdDisc = not na(boxHeight) ? ctxBoxBot + boxHeight * 0.25 : na
+recentBoxLong = aa_last_break_dir == 1 and not na(aa_last_break_bar) and bar_index - aa_last_break_bar <= pdWindowBars
+recentBoxShort = aa_last_break_dir == -1 and not na(aa_last_break_bar) and bar_index - aa_last_break_bar <= pdWindowBars
+insideActiveBox = boxes.size() > 0 and close <= boxes.first().get_top() and close >= boxes.first().get_bottom()
+pdLongLocation = not na(pdPrem) and ((recentBoxLong and close <= pdPrem) or (pdAllowInsideActiveBox and insideActiveBox and close <= pdEq))
+pdShortLocation = not na(pdDisc) and ((recentBoxShort and close >= pdDisc) or (pdAllowInsideActiveBox and insideActiveBox and close >= pdEq))
+pdLongTrigger = pdRequireReclaim ? (low <= pdEq and close > ta.highest(high, pdBreakLookback)[1]) : close > ta.highest(high, pdBreakLookback)[1]
+pdShortTrigger = pdRequireReclaim ? (high >= pdEq and close < ta.lowest(low, pdBreakLookback)[1]) : close < ta.lowest(low, pdBreakLookback)[1]
+pdLongOk = showPDArray and inWindow and boxContextOk(1) and boxEdgeOk(1) and pdLongLocation and pdLongTrigger and (not pdRequirePrimary or primaryOk(1)) and pd_long_marks_for_box < pdMaxPerBoxSide and canMark(1)
+pdShortOk = showPDArray and inWindow and boxContextOk(-1) and boxEdgeOk(-1) and pdShortLocation and pdShortTrigger and (not pdRequirePrimary or primaryOk(-1)) and pd_short_marks_for_box < pdMaxPerBoxSide and canMark(-1)
+if pdLongOk
+    markPD(1)
+    marksToday += 1
+    pd_long_marks_for_box += 1
+    lastAnyMarkBar := bar_index
+    lastLongMarkBar := bar_index
+if pdShortOk
+    markPD(-1)
+    marksToday += 1
+    pd_short_marks_for_box += 1
+    lastAnyMarkBar := bar_index
+    lastShortMarkBar := bar_index
+
+// One-bar selector bus. The first original broad C/D/X/E confirmation of the day wins.
+bool mainTrigger = false
+string mainFam = ""
+int mainSide = 0
+
+
+if inWindow and not aSeen and minsFromOpen >= rangeMinutes and minsFromOpen <= 25 and not na(openRangeHigh) and not na(openRangeLow)
+    aLong = dayLow <= openRangeLow and close > prevHigh + entryBufferPts and pulseDir == -1
+    aShort = dayHigh >= openRangeHigh and close < prevLow - entryBufferPts and pulseDir == 1
+    if aLong
+        if showContext and boxContextOk(1) and canMark(1)
+            markAsc("A", 1, "CTX")
+            marksToday += 1
+            lastAnyMarkBar := bar_index
+            lastLongMarkBar := bar_index
+        aSeen := true
+        activeDir := 1
+        switchDir := 1
+        switchLevel := close
+        switchBar := bar_index
+        lastFlipBar := bar_index
+        lastContinuationExtreme := high
+        continuationUsed := false
+        legHigh := high
+        legLow := low
+    if aShort
+        if showContext and boxContextOk(-1) and canMark(-1)
+            markAsc("A", -1, "CTX")
+            marksToday += 1
+            lastAnyMarkBar := bar_index
+            lastShortMarkBar := bar_index
+        aSeen := true
+        activeDir := -1
+        switchDir := -1
+        switchLevel := close
+        switchBar := bar_index
+        lastFlipBar := bar_index
+        lastContinuationExtreme := low
+        continuationUsed := false
+        legHigh := high
+        legLow := low
+
+if inWindow and not aSeen and not bSeen and pulseDir != 0 and minsFromOpen >= rangeMinutes and minsFromOpen <= 35 and not na(openRangeHigh) and not na(openRangeLow)
+    bLong = pulseDir == 1 and close >= openRangeHigh + entryBufferPts and close >= open
+    bShort = pulseDir == -1 and close <= openRangeLow - entryBufferPts and close <= open
+    if bLong
+        bSeen := true
+        activeDir := 1
+        switchDir := 1
+        switchLevel := close
+        switchBar := bar_index
+        lastFlipBar := bar_index
+        lastContinuationExtreme := high
+        continuationUsed := false
+        legHigh := high
+        legLow := low
+    if bShort
+        bSeen := true
+        activeDir := -1
+        switchDir := -1
+        switchLevel := close
+        switchBar := bar_index
+        lastFlipBar := bar_index
+        lastContinuationExtreme := low
+        continuationUsed := false
+        legHigh := high
+        legLow := low
+
+largeDownMove = not na(dayHigh) and dayHigh - dayLow >= flipAfterMovePts and activeDir == -1
+largeUpMove = not na(dayHigh) and dayHigh - dayLow >= flipAfterMovePts and activeDir == 1
+lateLongFlip = largeDownMove and flipCooldownOk and recentLowExtreme and close > flipPrevHigh + entryBufferPts and close >= open and minsFromOpen >= flipMinMinute and not na(legLow) and close - legLow >= flipLegMovePts
+lateShortFlip = largeUpMove and flipCooldownOk and recentHighExtreme and close < flipPrevLow - entryBufferPts and close <= open and minsFromOpen >= flipMinMinute and not na(legHigh) and legHigh - close >= flipLegMovePts
+if lateLongFlip
+    activeDir := 1
+    switchDir := 1
+    switchLevel := close
+    switchBar := bar_index
+    lastFlipBar := bar_index
+    lastContinuationExtreme := high
+    continuationUsed := false
+    legHigh := high
+    legLow := low
+    dTier = "P"
+    if not mainSelected and not mainTrigger and boxContextOk(1) and boxEdgeOk(1)
+        mainTrigger := true
+        mainFam := "D"
+        mainSide := 1
+    if entryOk("D", 1, dTier) and canMark(1)
+        markAsc("D", 1, dTier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastLongMarkBar := bar_index
+    else if showContext and boxContextOk(1) and canMark(1)
+        markAsc("D", 1, "CTX")
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastLongMarkBar := bar_index
+if lateShortFlip
+    activeDir := -1
+    switchDir := -1
+    switchLevel := close
+    switchBar := bar_index
+    lastFlipBar := bar_index
+    lastContinuationExtreme := low
+    continuationUsed := false
+    legHigh := high
+    legLow := low
+    dTier = "P"
+    if not mainSelected and not mainTrigger and boxContextOk(-1) and boxEdgeOk(-1)
+        mainTrigger := true
+        mainFam := "D"
+        mainSide := -1
+    if entryOk("D", -1, dTier) and canMark(-1)
+        markAsc("D", -1, dTier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastShortMarkBar := bar_index
+    else if showContext and boxContextOk(-1) and canMark(-1)
+        markAsc("D", -1, "CTX")
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastShortMarkBar := bar_index
+
+if activeDir == 1 and (na(lastContinuationExtreme) or high >= lastContinuationExtreme + reentryAfterExtremePts)
+    lastContinuationExtreme := high
+    continuationUsed := false
+    legHigh := high
+    legLow := low
+if activeDir == -1 and (na(lastContinuationExtreme) or low <= lastContinuationExtreme - reentryAfterExtremePts)
+    lastContinuationExtreme := low
+    continuationUsed := false
+    legHigh := high
+    legLow := low
+
+bullGap = low > high[2]
+bearGap = high < low[2]
+if inWindow and activeDir == 1 and bullGap and minsFromOpen >= rangeMinutes and minsFromOpen <= 105
+    bullIfvgArmed := true
+    bullIfvgMid := (low + high[2]) / 2
+    bullIfvgBar := bar_index
+if inWindow and activeDir == -1 and bearGap and minsFromOpen >= rangeMinutes and minsFromOpen <= 105
+    bearIfvgArmed := true
+    bearIfvgMid := (high + low[2]) / 2
+    bearIfvgBar := bar_index
+
+cLowerAllowed = showLower and (minsFromOpen <= 20 or (not na(switchBar) and bar_index - switchBar <= flipRetestMaxBars))
+if inWindow and bullIfvgArmed and bar_index - bullIfvgBar <= ifvgMaxRetestBars and low <= bullIfvgMid and close >= bullIfvgMid
+    p = primaryOk(1)
+    tier = p ? "P" : "L"
+    if not mainSelected and not mainTrigger and boxContextOk(1) and boxEdgeOk(1)
+        mainTrigger := true
+        mainFam := "C"
+        mainSide := 1
+    if (p or cLowerAllowed) and entryOk("C", 1, tier) and canMark(1)
+        markAsc("C", 1, tier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastLongMarkBar := bar_index
+        continuationUsed := true
+    bullIfvgArmed := false
+if inWindow and bearIfvgArmed and bar_index - bearIfvgBar <= ifvgMaxRetestBars and high >= bearIfvgMid and close <= bearIfvgMid
+    p = primaryOk(-1)
+    tier = p ? "P" : "L"
+    if not mainSelected and not mainTrigger and boxContextOk(-1) and boxEdgeOk(-1)
+        mainTrigger := true
+        mainFam := "C"
+        mainSide := -1
+    if (p or cLowerAllowed) and entryOk("C", -1, tier) and canMark(-1)
+        markAsc("C", -1, tier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastShortMarkBar := bar_index
+        continuationUsed := true
+    bearIfvgArmed := false
+
+trendShort = activeDir == -1 and impulseHigh - low >= minImpulsePts
+trendLong = activeDir == 1 and high - impulseLow >= minImpulsePts
+pullbackShort = trendShort and high - impulseLow >= pullbackMinPts and high - impulseLow <= pullbackMaxPts
+pullbackLong = trendLong and impulseHigh - low >= pullbackMinPts and impulseHigh - low <= pullbackMaxPts
+breakdownFromBase = trendShort and baseRange <= baseMaxRangePts and close < baseLow - entryBufferPts
+breakoutFromBase = trendLong and baseRange <= baseMaxRangePts and close > baseHigh + entryBufferPts
+pullbackRejectShort = pullbackShort and high >= high[1] and close <= high - math.max(2.0, localAdverse(-1) * 0.25)
+pullbackRejectLong = pullbackLong and low <= low[1] and close >= low + math.max(2.0, localAdverse(1) * 0.25)
+
+xAllowed = minsFromOpen >= 10
+xShort = xAllowed and (breakdownFromBase or (pullbackRejectShort and primaryOk(-1))) and not continuationUsed
+xLong = xAllowed and (breakoutFromBase or (pullbackRejectLong and primaryOk(1))) and not continuationUsed
+if inWindow and xShort
+    p = primaryOk(-1) or breakdownFromBase
+    tier = p ? "P" : "L"
+    if not mainSelected and not mainTrigger and boxContextOk(-1) and boxEdgeOk(-1)
+        mainTrigger := true
+        mainFam := "X"
+        mainSide := -1
+    if entryOk("X", -1, tier) and canMark(-1)
+        markAsc("X", -1, tier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastShortMarkBar := bar_index
+        continuationUsed := true
+if inWindow and xLong
+    p = primaryOk(1) or breakoutFromBase
+    tier = p ? "P" : "L"
+    if not mainSelected and not mainTrigger and boxContextOk(1) and boxEdgeOk(1)
+        mainTrigger := true
+        mainFam := "X"
+        mainSide := 1
+    if entryOk("X", 1, tier) and canMark(1)
+        markAsc("X", 1, tier)
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastLongMarkBar := bar_index
+        continuationUsed := true
+
+freshFlip = not na(switchBar) and bar_index > switchBar and bar_index - switchBar <= flipRetestMaxBars
+if inWindow and freshFlip and switchDir != 0
+    eLong = switchDir == 1 and (close > prevHigh + entryBufferPts or breakoutFromBase) and close >= open
+    eShort = switchDir == -1 and (close < prevLow - entryBufferPts or breakdownFromBase) and close <= open
+    if eLong and not mainSelected and not mainTrigger and boxContextOk(1) and boxEdgeOk(1)
+        mainTrigger := true
+        mainFam := "E"
+        mainSide := 1
+    if eShort and not mainSelected and not mainTrigger and boxContextOk(-1) and boxEdgeOk(-1)
+        mainTrigger := true
+        mainFam := "E"
+        mainSide := -1
+    if eLong and primaryOk(1) and entryOk("E", 1, "P") and canMark(1)
+        markAsc("E", 1, "P")
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastLongMarkBar := bar_index
+        switchLevel := close
+        continuationUsed := false
+    if eShort and primaryOk(-1) and entryOk("E", -1, "P") and canMark(-1)
+        markAsc("E", -1, "P")
+        marksToday += 1
+        lastAnyMarkBar := bar_index
+        lastShortMarkBar := bar_index
+        switchLevel := close
+        continuationUsed := false
+
+// Render only the first original broad C/D/X/E confirmation per day.
+if mainTrigger and not mainSelected
+    selectedTop = ctxBoxTop
+    selectedBot = ctxBoxBot
+    selectedLeft = not na(aa_last_box_start) ? aa_last_box_start : (boxes.size() > 0 ? boxes.first().get_left() : bar_index)
+    if not na(selectedTop) and not na(selectedBot) and selectedTop > selectedBot
+        [newMainBox, newMainEq, newMainLabel] = makeMainBox(mainFam, mainSide, selectedLeft, selectedTop, selectedBot)
+        mainBox := newMainBox
+        mainEqLine := newMainEq
+        mainBoxLabel := newMainLabel
+        mainSelected := true
+
+if mainSelected and extendMainThroughWindow and inWindow and not na(mainBox)
+    mainBox.set_right(bar_index)
+    if not na(mainEqLine)
+        mainEqLine.set_x2(bar_index)
+
+
+// Main-box study only. Raw box breaks remain context and are not automated alerts.
